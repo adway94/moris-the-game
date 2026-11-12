@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MORIS // ARENA SHOOTER</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04060c;
+    font-family:'Courier New', ui-monospace, monospace; color:#cfe9ff; }
+  canvas { display:block; }
+
+  /* ---------- overlays ---------- */
+  .overlay { position:fixed; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:18px; text-align:center;
+    background:radial-gradient(ellipse at center, rgba(6,10,22,.88), rgba(2,4,10,.97));
+    z-index:30; cursor:pointer; }
+  .overlay.hidden { display:none; }
+  .title { font-size:min(9vw,64px); letter-spacing:.18em; color:#54f0ff;
+    text-shadow:0 0 18px rgba(84,240,255,.55), 0 0 60px rgba(84,240,255,.25); }
+  .title .red { color:#ff4d5e; text-shadow:0 0 18px rgba(255,77,94,.55); }
+  .subtitle { color:#7fa8c9; letter-spacing:.3em; font-size:13px; }
+  .controls { line-height:1.9; color:#9fc6e8; font-size:15px; }
+  .controls b { color:#54f0ff; }
+  .cta { margin-top:10px; font-size:17px; letter-spacing:.22em; color:#eaffff;
+    padding:14px 34px; border:1px solid rgba(84,240,255,.5); border-radius:4px;
+    background:rgba(84,240,255,.07); animation:pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:.55} 50%{opacity:1} }
+  .stat-big { font-size:34px; color:#54f0ff; letter-spacing:.1em; }
+  .stat-line { color:#9fc6e8; font-size:15px; letter-spacing:.12em; }
+  .best { color:#ffd166; }
+
+  /* ---------- HUD ---------- */
+  #hud { position:fixed; inset:0; pointer-events:none; z-index:20; }
+  #hud.hidden { display:none; }
+
+  #crosshair { position:absolute; left:50%; top:50%; width:22px; height:22px;
+    transform:translate(-50%,-50%); }
+  #crosshair span { position:absolute; background:#8dfaff; box-shadow:0 0 6px rgba(141,250,255,.9); }
+  #crosshair .v { left:50%; top:0; width:2px; height:100%; margin-left:-1px;
+    clip-path:polygon(0 0,100% 0,100% 32%,0 32%,0 68%,100% 68%,100% 100%,0 100%); }
+  #crosshair .h { top:50%; left:0; height:2px; width:100%; margin-top:-1px;
+    clip-path:polygon(0 0,32% 0,32% 100%,0 100%,68% 100%,68% 0,100% 0,100% 100%,0 100%); }
+  #crosshair .dot { left:50%; top:50%; width:3px; height:3px; border-radius:50%;
+    transform:translate(-50%,-50%); }
+
+  #hitmark { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%) rotate(45deg);
+    width:26px; height:26px; opacity:0; }
+  #hitmark::before, #hitmark::after { content:''; position:absolute; background:#fff; }
+  #hitmark::before { left:50%; top:0; width:2px; height:100%; margin-left:-1px; }
+  #hitmark::after { top:50%; left:0; height:2px; width:100%; margin-top:-1px; }
+
+  #dmg { position:fixed; inset:0; pointer-events:none; z-index:25; opacity:0;
+    background:radial-gradient(ellipse at center, transparent 42%, rgba(255,20,40,.6) 100%); }
+
+  #hpwrap { position:absolute; left:28px; bottom:26px; width:250px; }
+  #hplabel { font-size:12px; letter-spacing:.25em; color:#7fa8c9; margin-bottom:5px; }
+  #hpbarbg { width:100%; height:12px; border:1px solid rgba(84,240,255,.4);
+    background:rgba(4,10,20,.7); border-radius:2px; overflow:hidden; }
+  #hpbar { height:100%; width:100%; background:linear-gradient(90deg,#0ee6a0,#54f0ff);
+    box-shadow:0 0 12px rgba(14,230,160,.6); transition:width .15s; }
+  #hpbar.low { background:linear-gradient(90deg,#ff3b4e,#ff8f4d);
+    box-shadow:0 0 12px rgba(255,59,78,.7); }
+
+  #ammowrap { position:absolute; right:32px; bottom:24px; text-align:right; }
+  #ammo { font-size:44px; color:#eaffff; text-shadow:0 0 14px rgba(84,240,255,.5); }
+  #ammo .reserve { font-size:18px; color:#7fa8c9; }
+  #ammo.reloading { color:#ffd166; animation:pulse .5s linear infinite; }
+  #wname { font-size:12px; letter-spacing:.3em; color:#7fa8c9; }
+
+  #topbar { position:absolute; top:20px; left:50%; transform:translateX(-50%);
+    display:flex; gap:34px; font-size:14px; letter-spacing:.18em; color:#9fc6e8; }
+  #topbar b { color:#54f0ff; font-size:18px; }
+
+  #wavemsg { position:absolute; left:50%; top:30%; transform:translateX(-50%);
+    font-size:42px; letter-spacing:.3em; color:#ff4d5e; opacity:0; white-space:nowrap;
+    text-shadow:0 0 22px rgba(255,77,94,.6); }
+  #wavemsg.show { animation:wavemsg 2.4s ease forwards; }
+  @keyframes wavemsg { 0%{opacity:0; transform:translateX(-50%) scale(.8)}
+    15%{opacity:1; transform:translateX(-50%) scale(1)}
+    75%{opacity:1} 100%{opacity:0} }
+
+  #killfeed { position:absolute; right:32px; top:70px; text-align:right;
+    font-size:13px; letter-spacing:.12em; line-height:1.7; }
+  #killfeed div { color:#8dfaff; opacity:.9; }
+  #killfeed div.dying { transition:opacity 1s; opacity:0; }
+</style>
+</head>
+<body>
+
+<div id="hud" class="hidden">
+  <div id="crosshair"><span class="v"></span><span class="h"></span><span class="dot"></span></div>
+  <div id="hitmark"></div>
+  <div id="topbar">
+    <span>OLEADA <b id="wave">1</b></span>
+    <span>ENEMIGOS <b id="enemies">0</b></span>
+    <span>SCORE <b id="score">0</b></span>
+  </div>
+  <div id="wavemsg"></div>
+  <div id="killfeed"></div>
+  <div id="hpwrap">
+    <div id="hplabel">VITALIDAD</div>
+    <div id="hpbarbg"><div id="hpbar"></div></div>
+  </div>
+  <div id="ammowrap">
+    <div id="wname">RIFLE XM-9</div>
+    <div id="ammo"><span id="mag">30</span><span class="reserve"> / inf</span></div>
+  </div>
+</div>
+<div id="dmg"></div>
+
+<div id="menu" class="overlay">
+  <div class="title">MORIS <span class="red">//</span> ARENA</div>
+  <div class="subtitle">WAVE SHOOTER — three.js — 100% local</div>
+  <div class="controls">
+    <b>WASD</b> moverse &nbsp;·&nbsp; <b>MOUSE</b> apuntar &nbsp;·&nbsp; <b>CLIC IZQ</b> disparar<br>
+    <b>SHIFT</b> sprint &nbsp;·&nbsp; <b>ESPACIO</b> saltar &nbsp;·&nbsp; <b>R</b> recargar &nbsp;·&nbsp; <b>ESC</b> pausa<br>
+    Sobreviví a las oleadas. Los tanques naranjas sueltan botiquines <b>+</b>.
+  </div>
+  <div class="cta" id="startbtn">CLIC PARA JUGAR</div>
+  <div class="stat-line">Recomendado: PC con mouse. Mejor score: <span class="best" id="bestmenu">0</span></div>
+</div>
+
+<div id="pause" class="overlay hidden">
+  <div class="title" style="font-size:40px">PAUSA</div>
+  <div class="cta">CLIC PARA CONTINUAR</div>
+</div>
+
+<div id="dead" class="overlay hidden">
+  <div class="title red" style="font-size:52px">ELIMINADO</div>
+  <div class="stat-big">SCORE <span id="finalscore">0</span></div>
+  <div class="stat-line">Oleada alcanzada: <span id="finalwave">1</span> · Kills: <span id="finalkills">0</span></div>
+  <div class="stat-line best">Mejor score: <span id="bestdead">0</span></div>
+  <div class="cta">CLIC PARA REINTENTAR</div>
+</div>
+
+<script type="importmap">
+  { "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+<script type="module" src="./game.js"></script>
+</body>
+</html>
