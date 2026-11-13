@@ -78,6 +78,30 @@ const Sfx = {
     this.env(o, t0, peak, dur);
     o.start(t0); o.stop(t0 + dur + 0.02);
   },
+  // E6b — curva de saturación LIGERA (tanh suave) para el sting del jefe: ensucia el
+  // grave sin tapar el juego. Cacheada: la misma Float32Array para todos los shapers.
+  _distCurve: null,
+  distCurve() {
+    if (!this._distCurve) {
+      const n = 257, c = new Float32Array(n);
+      for (let i = 0; i < n; i++) { const x = i / (n - 1) * 2 - 1; c[i] = Math.tanh(x * 2.2); }
+      this._distCurve = c;
+    }
+    return this._distCurve;
+  },
+  // E6b — como tone() pero pasa por el WaveShaper: grave "sucio" para el sting.
+  distTone(type, f0, f1, dur, peak) {
+    if (!this.ctx) return;
+    const t0 = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t0);
+    o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+    const ws = this.ctx.createWaveShaper();
+    ws.curve = this.distCurve(); ws.oversample = '2x';
+    o.connect(ws); this.env(ws, t0, peak, dur);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  },
   // E4a — disparo distintivo por arma (WebAudio corto, retro). `shoot` era el crack
   // genérico del rifle: pasa a llamarse shootVecinal y cada arma suma el suyo.
   shootVecinal(){ this.noise(0.09, 0.5, 1900, 0.8); this.tone('sine', 120, 40, 0.07, 0.4); },
@@ -122,27 +146,29 @@ const Sfx = {
   dry()         { this.noise(0.02, 0.14, 2800, 3); this.tone('square', 150, 70, 0.03, 0.1); }, // aguja percutida: pool vacío
   wave()   { [440, 554, 659, 880].forEach((f, i) => setTimeout(() => this.tone('triangle', f, f, 0.16, 0.18), i * 110)); },
   death()  { this.tone('sawtooth', 300, 30, 1.1, 0.3); this.noise(0.8, 0.25, 220, 0.5); },
-  // E5 — campaña: el lamento grave del mini-jefe. E6 lo volvió UNO PROPIO POR JEFE
-  // (todos graves y distintos entre sí: rotor / groaning / fragua / réquiem / digital).
+  // E5 — campaña: el lamento grave del mini-jefe. E6b lo dejó en sting de 0.8 s con
+  // distorsión ligera (distTone) y NOTA DISTINTA por jefe, de grave a más grave:
+  // criopylot G1 arrancando · huerta C2 groan vegetal · fundidor E1 martillo de fragua ·
+  // confesor A2 réquiem desafinado a dos voces · moris9 barrido digital 520→52.
   bossSpawn(id = 'elite') {
-    if (id === 'criopylot') { // rotor criogénico que se acerca + silbido de presión
-      this.tone('sawtooth', 64, 40, 1.4, 0.42); this.noise(1.2, 0.18, 210, 0.6);
-      setTimeout(() => this.tone('triangle', 92, 58, 0.9, 0.22), 300);
-    } else if (id === 'huerta') { // groan de tallo gigante + burbujas de savia
-      this.tone('sine', 52, 33, 1.7, 0.5); this.noise(1.3, 0.22, 120, 0.4);
-      setTimeout(() => this.noise(0.25, 0.2, 420, 3), 700);
-      setTimeout(() => this.noise(0.2, 0.16, 300, 3), 1050);
-    } else if (id === 'fundidor') { // fragua: golpe grave + siseo de colada + yunque
-      this.tone('sawtooth', 86, 30, 1.3, 0.45); this.noise(1.1, 0.25, 180, 0.5);
-      setTimeout(() => this.noise(0.6, 0.2, 2400, 0.8), 420);
-      setTimeout(() => this.tone('square', 170, 60, 0.16, 0.3), 900);
-    } else if (id === 'confesor') { // réquiem desafinado: dos senos graves batiendo lento
-      this.tone('sine', 98, 92, 1.8, 0.32); this.tone('sine', 104, 96, 1.8, 0.26);
-      setTimeout(() => this.tone('sine', 62, 58, 1.2, 0.3), 500);
-    } else if (id === 'moris9') { // barrido digital 520→52 + sub-grave + chispa de datos
-      this.tone('square', 520, 52, 1.5, 0.34); this.tone('sine', 42, 34, 1.7, 0.5);
-      setTimeout(() => this.noise(0.25, 0.15, 3200, 2), 800);
-    } else { // elite genérico heredado de E5 (fallback)
+    if (id === 'criopylot') { // rotor criogénico que arranca y se muere + silbido de presión
+      this.distTone('sawtooth', 98, 40, 0.8, 0.4);
+      this.noise(0.55, 0.16, 900, 1.3);
+    } else if (id === 'huerta') { // groan de tallo gigante + burbuja de savia a media queja
+      this.distTone('sine', 65, 29, 0.8, 0.5);
+      setTimeout(() => this.noise(0.18, 0.2, 420, 3), 320);
+    } else if (id === 'fundidor') { // yanzuqueada: golpe grave + siseo de colada
+      this.distTone('square', 82, 27, 0.7, 0.34);
+      this.noise(0.7, 0.22, 200, 0.5);
+      setTimeout(() => this.noise(0.16, 0.18, 2200, 1), 240);
+    } else if (id === 'confesor') { // dos senos graves desafinados que baten (réquiem corto)
+      this.distTone('sine', 110, 55, 0.8, 0.3);
+      this.distTone('sine', 116, 52, 0.8, 0.26);
+    } else if (id === 'moris9') { // barrido digital + sub-grave + chispa de datos final
+      this.distTone('square', 520, 52, 0.8, 0.28);
+      this.distTone('sine', 42, 30, 0.8, 0.45);
+      setTimeout(() => this.noise(0.12, 0.15, 3200, 2), 480);
+    } else { // elite genérico heredado de E5 (fallback: sin flujo propio en campaña)
       this.tone('sawtooth', 70, 46, 1.2, 0.4); this.noise(1.0, 0.2, 160, 0.5);
       setTimeout(() => this.tone('sawtooth', 58, 40, 1.0, 0.32), 240);
     }
@@ -479,7 +505,9 @@ const PALETTES = {
 /* Las 5 de DESIGN_ARSENAL.md/PLAN_ITERACION.md. Campos:
    · waves + weapons {early, exit, mid} = colocación de armas del guion (early: al iniciar ·
      exit: ANTES del portal en la antesala, no te lo podés perder · mid: tras completar las
-     waves, "te lo da MORIS"). El jefe NO es campo del nivel: lo fija BOSS_TYPE por índice.
+     waves, "te lo da MORIS").
+    · E6b boss: tipo del mini-jefe del sector (fila de ENEMY_TYPES con bossType:true) —
+      DECLARATIVO como spawnWeights; BOSS_TYPE queda como orden histórico/fallback.
    · sky {kind:'stars'|'dome'|'void', stops, stars, code} · fog {color, density}
    · light: [hemi sky, ground, int] [sun col, int] [rim cian, rim magenta, int, int]
    · set: constructor de geometría propia + props (≤40) — ver funciones setXxx abajo.
@@ -490,6 +518,7 @@ const LEVELS = [
   { id: 1, name: 'CRIOPODS', subtitle: 'el frío despierta a todo, incluso a lo que no debería',
     waves: 3, seed: 1337, pal: PALETTES.criopods,
     spawnWeights: { droner: 2, sprinter: 1 },                     // como hoy: droners + rastreadores
+    boss: 'criopylot',                                             // E6b: droner gigante con cría y embestida
     weapons: { exit: 'moris12' },                              // "escopeta al final N1": antesala del portal
     sky: { kind: 'stars', stops: [[0, '#000104'], [0.34, '#020715'], [0.62, '#082142'], [0.86, '#114374'], [0.955, '#1d5d94'], [1, '#0a1a30']], stars: true },
     bg: 0x05070d, fog: { color: 0x081327, density: 0.021 },        // niebla azul densa
@@ -500,6 +529,7 @@ const LEVELS = [
     weapons: { early: 'ametralladora', exit: 'asador' },       // N2 early / N2 final (guion DESIGN_ARSENAL)
     sky: { kind: 'dome', stops: [[0, '#02150c'], [0.3, '#06351d'], [0.6, '#0d5a2c'], [0.85, '#1d8a45'], [0.95, '#2fb35c'], [1, '#0a2f1a']], stars: false },
     spawnWeights: { esporeador: 4, droner: 3, sprinter: 3 },      // E6: el jardín camina
+    boss: 'huerta',                                                // E6b: la planta raíz que no se mueve
     bg: 0x04120a, fog: { color: 0x0d3a1e, density: 0.023 },        // niebla verde
     light: [[0x4ac07a, 0x0a1c10, 1.8], [0xaaffc4, 2.2], [0x3ddc84, 0xff3bd8, 90, 70]],
     set: setInvernadero },
@@ -508,6 +538,7 @@ const LEVELS = [
     weapons: { early: 'kira', exit: 'mate' },
     sky: { kind: 'dome', stops: [[0, '#0a0503'], [0.45, '#1e0b04'], [0.72, '#59210a'], [0.9, '#9c4413'], [1, '#2a0f06']], stars: false },
     spawnWeights: { lancellas: 4, esporeador: 3, brute: 3 },      // E6: fundición con lanzas
+    boss: 'fundidor',                                              // E6b: brute cañón de colada, fase 2 enloquece
     bg: 0x120803, fog: { color: 0x3a1608, density: 0.02 },         // fog naranja
     light: [[0x9a5a2a, 0x1c0c04, 1.6], [0xffc890, 2.0], [0xff7a2a, 0xffd166, 110, 60]],
     set: setReactor },
@@ -516,6 +547,7 @@ const LEVELS = [
     weapons: { early: 'chango', exit: 'riel' },
     sky: { kind: 'void', stops: [[0, '#020107'], [0.55, '#0a0618'], [0.85, '#160c2e'], [1, '#070410']], stars: false },
     spawnWeights: { posesivo: 4, espectro: 4, sprinter: 2 },     // E6: la cripta está poseída
+    boss: 'confesor',                                              // E6b: espectro grande que salta a cada golpe
     bg: 0x060309, fog: { color: 0x160c2e, density: 0.028 },        // casi a ciegas
     light: [[0x3a2c58, 0x070410, 0.55], [0x9a7ad0, 0.5], [0xaa5cff, 0x5450ff, 130, 90]], // ambient al piso: los emisivos cargan la escena
     set: setCripta },
@@ -523,6 +555,7 @@ const LEVELS = [
     waves: 1, seed: 777, pal: PALETTES.nucleo, seamK: 2.2, // grilla cian tipo Tron (junta del piso al doble)
     // E6: la arena glitch mezcla TODO el bestiario + glitch (el núcleo clona lo que vio)
     spawnWeights: { glitch: 4, droner: 2, sprinter: 2, lancellas: 2, espectro: 2, brute: 1, esporeador: 1, posesivo: 1 },
+    boss: 'moris9',                                                // E6b: jefe final — núcleo + anillo, 3 fases
     weapons: { mid: 'compilador' },                           // "N5 medio: tras las oleadas, te lo da MORIS"
     sky: { kind: 'void', code: true },                             // vacío negro con código cian
     bg: 0x000205, fog: { color: 0x03141f, density: 0.013 },        // niebla cian fina
@@ -1510,6 +1543,10 @@ const ENEMY_TYPES = {
 };
 const enemies = [];
 const enemyHitboxes = []; // mallas invisibles para raycast
+// E6b spec 7: summons del jefe que deben apagarse con él. die() puede correr DENTRO del
+// update() de un enemigo (burn DoT) y splices ajenos al índice actual romperían el loop
+// inverso de update(): la limpieza se difiere un frame (patrón respawnPending).
+let pendingPop = null;
 
 // E4a — tinte por ESTADO del sprite (riesgo documentado de "pisarse tintes" del E2):
 // el color del material ya lo usa el flash blanco HDR; la solución es UN solo punto de
@@ -1625,6 +1662,22 @@ class Enemy {
       this.aura.position.y = -this.baseY / T.scale + 0.08; // pispa el suelo real del grupo
       this.g.add(this.aura);
     }
+    if (type === 'moris9') { // E6b (spec 1): anillo de datos PROPIO — torus inclinado con
+                             // 3 nodos emisivos; los nodos son los que HACEN VISIBLE el
+                             // giro (un torus liso girando sobre su eje no se mueve).
+      this.ringMat = new THREE.MeshBasicMaterial({ color: neon(0x54f0ff, 2.6), transparent: true,
+        opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
+      this.ring = new THREE.Group();
+      this.ring.add(new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.055, 5, 24), this.ringMat));
+      for (let i = 0; i < 3; i++) {
+        const a = i / 3 * 6.2832;
+        const node = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.34), this.ringMat);
+        node.position.set(Math.cos(a) * 1.35, Math.sin(a) * 1.35, 0);
+        this.ring.add(node);
+      }
+      this.ring.rotation.x = -Math.PI / 2 + 0.5; // Saturno oblicuo sobre el núcleo
+      this.g.add(this.ring);
+    }
 
     this.hitbox = new THREE.Mesh(hitGeo, new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }));
     this.hitbox.userData.enemy = this;
@@ -1678,6 +1731,12 @@ class Enemy {
   die() {
     Sfx.kill();
     if (this.boss) Sfx.explosion(); // el jefe se apaga con boom, no con el blip normal
+    // E6b spec 7: el séquito PROPIO (drones/esporeadores/posesivos/glitches) se apaga CON
+    // su jefe — sin score ni drop (no fue mérito del jugador) y sin tocar el killfeed.
+    // Diferido un frame (pendingPop): die() puede correr desde el update() del propio
+    // enemigo (burn) y el loop inverso no perdona splices ajenos al índice actual.
+    if (this.boss)
+      for (const m of enemies) if (m.owner === this) (pendingPop || (pendingPop = [])).push(m);
     game.score += this.T.score; game.kills++;
     if (this.boss) feed(`BOSS: ${this.T.name} +${this.T.score}`); // E6: score alto al killfeed
     // E8-polish(a): el "+100 DRONER" ya NO sube al killfeed arriba a la derecha — es un
@@ -1697,9 +1756,20 @@ class Enemy {
   }
   // punto "pecho" para el popup de score (centro alto del billboard)
   chest(out) { return out.set(this.g.position.x, this.g.position.y + 0.8, this.g.position.z); }
+  // E6b: apagón de summon (el jefe murió) — burst corto y afuera. El guard cubre el caso
+  // de que el reset de nivel (resetArenaCombat) se lo haya llevado por delante primero.
+  pop() {
+    if (!enemies.includes(this)) return;
+    burst(this.g.position, this.T.color, 12, 5, 0.9, 1.5);
+    this.remove();
+  }
   remove() {
     scene.remove(this.g);
     if (this.aura) { this.aura.geometry.dispose(); this.aura.material.dispose(); } // geo/mat del elite son propios
+    if (this.ring) { // E6b: el anillo de MORIS-9 también es propio (geo por hijo, mat compartida)
+      for (const m of this.ring.children) m.geometry.dispose();
+      this.ringMat.dispose();
+    }
     const i = enemies.indexOf(this); if (i >= 0) enemies.splice(i, 1);
     const j = enemyHitboxes.indexOf(this.hitbox); if (j >= 0) enemyHitboxes.splice(j, 1);
   }
@@ -1733,6 +1803,9 @@ class Enemy {
       this.burnT > 0 ? TINT_BURN : this.scorchT > 0 ? TINT_SCORCH : baseTint,
       Math.min(1, dt * 5));
     if (this.aura) this.aura.scale.setScalar(1 + Math.sin(t * 4 + this.phase) * 0.12); // E5: aura latiendo
+    // E6b: el anillo de MORIS-9 gira sobre su eje (los nodos delatan el giro); f3 acelera
+    // junto con TODO lo demás (spec: fase final al 140 % de ritmo).
+    if (this.ring) this.ring.rotation.z += dt * (this.phaseN >= 3 ? 1.9 : 1.1);
 
     // E6 telegrafía: 0.3 s de flash + shake de sprite antes de cada ataque (spec 4);
     // al vencer corre la acción agendada por el comportamiento.
@@ -1836,14 +1909,15 @@ class Enemy {
     // vista, su popup de score se ancla a esta última posición conocida
     this.lastScr = screenOf(this.chest(_popV), this.lastScr);
 
-    // daño por contacto — E6: la embestida pega DURANTE todo el dash (25 de frente, una
-    // vez por carrera); el contacto común mantiene el radio de E2 (el Huerta quieta cobra
-    // su "radio 3 m" con hitbox × escala: 1.1×2.6+0.6 ≈ 3.5).
+    // daño por contacto — E6: la embestida pega DURANTE todo el dash (una vez por
+    // carrera); E6b fija 25 para TODO jefe que embiste (spec: "como el criopylot"). El
+    // contacto común mantiene el radio de E2 (el Huerta quieta cobra su "radio 3 m" con
+    // hitbox × escala: 1.1×2.6+0.6 ≈ 3.5).
     this.hitCd -= dt;
     if (this.dashOn) {
       if (!this.dashHit && dist < 1.3 * T.scale + 0.7) {
         this.dashHit = true;
-        damagePlayer(this.type === 'fundidor' ? 30 : 25);
+        damagePlayer(25);
         player.shakeT = Math.max(player.shakeT, 0.25); // el embiste se siente en la cámara
       }
     } else if (dist < 1.1 * T.scale + 0.6 && this.hitCd <= 0 && this.spawnT >= 1) {
@@ -1856,12 +1930,13 @@ class Enemy {
   // Los que disparan telegrafían con startTell (flash + shake 0.3 s) y el disparo real
   // corre cuando el tell vence. LOS = línea de visión libre contra los sólidos del nivel.
   startTell(sec, fn) { if (this.tell > 0) return; this.tell = sec; this.tellQ = fn; this.flash(); }
-  blinkNear() { // posesivo / Confesor: salto a un punto DETRÁS o al LADO del jugador,
-                // dentro de 6 m, clamp arena y nunca dentro de un muro. (a = yaw manda
+  blinkNear(maxD = 6) { // posesivo / Confesor: salto a un punto DETRÁS o al LADO del jugador,
+                // dentro de maxD m, clamp arena y nunca dentro de un muro. (a = yaw manda
                 // hacia atrás: el offset 0 cae a la espalda, ±1.5 sale a los costados.)
+                // E6b: el Confesor pide ≤7 m (blinkNear(7)); el posesivo conserva los 6 del E6a.
     for (let i = 0; i < 10; i++) {
       const a = player.yaw + rand(-1.5, 1.5);
-      const d = rand(2.4, 6);
+      const d = rand(2.4, maxD);
       const x = clamp(player.pos.x + Math.sin(a) * d, -ARENA + 1.5, ARENA - 1.5);
       const z = clamp(player.pos.z + Math.cos(a) * d, -ARENA + 1.5, ARENA - 1.5);
       let wall = false;
@@ -1875,11 +1950,12 @@ class Enemy {
       return;
     }
   }
-  startDash() {
+  startDash(speed = 22) { // E6b: 22 m/s de línea (spec; el WIP corría a 19) — Criopylot y
+                          // Fundidor f2 comparten la embestida, solo cambia el intervalo.
     const p = this.g.position;
     const dx = player.pos.x - p.x, dz = player.pos.z - p.z;
     const l = Math.hypot(dx, dz) || 1;
-    this._dx = dx / l * 19; this._dz = dz / l * 19;
+    this._dx = dx / l * speed; this._dz = dz / l * speed;
     this.dashOn = true; this.dashT = 0.6; this.dashHit = false; // 0.6 s de línea rápida
     Sfx.dash(); // rugido corto de arranque
   }
@@ -1975,7 +2051,8 @@ class Enemy {
         }
         this.bossCommon(dt, 'droner', 3, 8);
         this.atkT -= dt;
-        if (this.atkT <= 0) { this.atkT = 6; this.startTell(0.3, () => this.startDash()); }
+        // E6b: telegraph 0.5 s de flash blanco + dash de 0.6 s a 22 m/s (spec 1)
+        if (this.atkT <= 0) { this.atkT = 6; this.startTell(0.5, () => this.startDash(22)); }
         break;
       }
       case 'static': { // Padre Huerta: 5 esporas en abanico c/2.5 s (explotan en nube
@@ -1987,9 +2064,11 @@ class Enemy {
           this.startTell(0.3, () => {
             for (let i = 0; i < 5; i++) {
               const a = a0 + (i - 2) * 0.16; // abanico ~±23°
+              // E6b: espora LENTA que revienta en nube de veneno al impactar o A LOS 2 s
+              // (life 2 → el expired del pool ya la hace explotar: spec 1).
               fireBolt('spore', p.x, 1.9, p.z,
                        Math.sin(a) * 7.2, (player.pos.y - 1.1) * 0.1, Math.cos(a) * 7.2,
-                       { dmg: 6, life: 3.4 });
+                       { dmg: 6, life: 2 });
             }
             Sfx.sporePop();
           });
