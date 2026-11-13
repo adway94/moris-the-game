@@ -3163,8 +3163,7 @@ function campaignStart(level, snap) {
     beginLevel(level);
     // QA: ?boss=1 spawnea el mini-jefe del sector al toque (para validar patrones).
     if (new URLSearchParams(location.search).has('boss')) spawnBoss();
-    game.state = 'play';
-    dispatchEvent(new CustomEvent('gamestate', { detail: 'play' }));
+    lockAndPlay(); // oculta menú/muestra HUD de verdad (antes quedaba el menú encima)
     return;
   }
   if (snap) {
