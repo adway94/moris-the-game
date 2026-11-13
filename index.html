@@ -42,8 +42,13 @@
   #hud { position:fixed; inset:0; pointer-events:none; z-index:20; }
   #hud.hidden { display:none; }
 
+  /* ---------- crosshair (E4a): UN GLIFO DE DOM POR ARMA (solo CSS, sin assets).
+     game.js pone #crosshair.wcross-<WEAPONS.cross> (melee|pistol|shotgun|smg|flamer|
+     rocket); los spans del "+" clásico se ocultan y el ::before dibuja el glifo con la
+     fuente monoespaciada. El campo `cross` es por ARMA (no por type): vecinal y
+     ametralladora comparten hitscan pero no mira. ---------- */
   #crosshair { position:absolute; left:50%; top:50%; width:22px; height:22px;
-    transform:translate(-50%,-50%); }
+    transform:translate(-50%,-50%); color:#8dfaff; text-shadow:0 0 6px rgba(141,250,255,.9); }
   #crosshair span { position:absolute; background:#8dfaff; box-shadow:0 0 6px rgba(141,250,255,.9); }
   #crosshair .v { left:50%; top:0; width:2px; height:100%; margin-left:-1px;
     clip-path:polygon(0 0,100% 0,100% 32%,0 32%,0 68%,100% 68%,100% 100%,0 100%); }
@@ -51,6 +56,19 @@
     clip-path:polygon(0 0,32% 0,32% 100%,0 100%,68% 100%,68% 0,100% 0,100% 100%,0 100%); }
   #crosshair .dot { left:50%; top:50%; width:3px; height:3px; border-radius:50%;
     transform:translate(-50%,-50%); }
+  #crosshair::before { position:absolute; inset:0; display:flex; align-items:center;
+    justify-content:center; font-weight:bold; }
+  #crosshair[class] span { display:none; }        /* el glifo manda sobre el + de spans */
+  #crosshair.wcross-melee::before   { content:'+'; font-size:15px; opacity:.8; }
+  #crosshair.wcross-pistol::before  { content:'+'; font-size:21px; }
+  #crosshair.wcross-shotgun::before { content:'○'; font-size:18px; }
+  #crosshair.wcross-flamer::before  { content:'~'; font-size:23px; font-style:italic;
+    color:#ff8a5e; text-shadow:0 0 8px rgba(255,94,58,.9); }
+  #crosshair.wcross-rocket::before  { content:'⊙'; font-size:19px; }
+  /* smg = "+" denso: triple línea de glifo con text-shadows (más tinta = más balas) */
+  #crosshair.wcross-smg::before { content:'+'; font-size:15px; line-height:.42;
+    color:#b6ff5e;
+    text-shadow:0 -5px 0 currentColor, 0 5px 0 currentColor, 0 0 8px rgba(182,255,94,.9); }
 
   #hitmark { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%) rotate(45deg);
     width:26px; height:26px; opacity:0; }
@@ -80,6 +98,21 @@
   #ammo .reserve { font-size:18px; color:#7fa8c9; }
   #ammo.reloading { color:#ffd166; animation:pulse .5s linear infinite; }
   #wname { font-size:12px; letter-spacing:.3em; color:#7fa8c9; }
+  /* E4a: sobrecalentamiento de la ametralladora — el nombre pasa a "CALOR" rojo */
+  #wname.hot { color:#ff4d3d; text-shadow:0 0 12px rgba(255,77,61,.8);
+    animation:pulse .35s linear infinite; }
+
+  /* E4a: slot bar — fichas chiquitas estilo terminal bajo el nombre del arma:
+     "2 M12 34" = tecla, nombre corto, resto del pool. La activa en cian HDR. */
+  #slotbar { display:flex; gap:6px; justify-content:flex-end; margin-top:6px; flex-wrap:wrap; }
+  #slotbar .slot { font-size:10px; letter-spacing:.08em; color:#5b7d9c;
+    padding:2px 6px; border:1px solid rgba(84,240,255,.22); border-radius:2px;
+    background:rgba(4,10,20,.55); white-space:nowrap; }
+  #slotbar .slot b { color:#8fb8d8; font-weight:normal; }        /* tecla */
+  #slotbar .slot i { font-style:normal; color:#9fc6e8; margin-left:6px; } /* pool */
+  #slotbar .slot.active { color:#8dfaff; border-color:rgba(141,250,255,.8);
+    background:rgba(84,240,255,.12); box-shadow:0 0 10px rgba(84,240,255,.35); }
+  #slotbar .slot.active i { color:#eaffff; }
 
   /* toast de pickup (E3): pool de 3 mensajes apilados arriba del HUD */
   #toasts { position:absolute; left:50%; bottom:104px; transform:translateX(-50%);
@@ -175,6 +208,12 @@
     right:calc(26px + env(safe-area-inset-right, 0px) + 110px + 26px); bottom:calc(49px + env(safe-area-inset-bottom, 0px)); }
   #tjump { width:64px; height:64px;
     right:calc(49px + env(safe-area-inset-right, 0px)); bottom:calc(162px + env(safe-area-inset-bottom, 0px)); }
+  /* E4a: troca de arma táctil — dos botones de 56 px (estilo FIRE) arriba de RECARGAR,
+     fuera del alcance del arrastre de mira y sin tapar el HUD (game.js los crea y los
+     muestra solo con ≥2 armas owned). */
+  #tswapL, #tswapR { width:56px; height:56px; font-size:16px; display:none; }
+  #tswapL { right:calc(230px + env(safe-area-inset-right, 0px)); bottom:calc(125px + env(safe-area-inset-bottom, 0px)); }
+  #tswapR { right:calc(162px + env(safe-area-inset-right, 0px)); bottom:calc(125px + env(safe-area-inset-bottom, 0px)); }
 
   /* Con FIRE abajo a la derecha el HUD se reubica: munición arriba a la derecha (el botón
      la taparía) por debajo de la topbar, y el killfeed desciende para no pisarla.
@@ -219,8 +258,9 @@
   <div id="toasts"></div>
   <div id="ammoHint">SIN MUNICIÓN — BUSCÁ CAJAS</div>
   <div id="ammowrap">
-    <div id="wname">RIFLE XM-9</div>
+    <div id="wname">VECINAL</div>
     <div id="ammo"><span id="mag">30</span><span class="reserve" id="reserve"> / 120 balas</span></div>
+    <div id="slotbar"></div>
   </div>
 </div>
 <div id="dmg"></div>
@@ -242,14 +282,15 @@
   <div class="subtitle">WAVE SHOOTER — three.js — 100% local</div>
   <div class="controls" id="controlsDesktop">
     <b>WASD</b> moverse &nbsp;·&nbsp; <b>MOUSE</b> apuntar &nbsp;·&nbsp; <b>CLIC IZQ</b> disparar<br>
-    <b>SHIFT</b> sprint &nbsp;·&nbsp; <b>ESPACIO</b> saltar &nbsp;·&nbsp; <b>R</b> recargar &nbsp;·&nbsp; <b>B</b> bloom &nbsp;·&nbsp; <b>T</b> retro &nbsp;·&nbsp; <b>ESC</b> pausa<br>
-    Sobreviví a las oleadas. <b>La munición se acaba</b>: juntá cajas de vida, armadura y balas
-    en la arena — los enemigos sueltan drops.<br>
+    <b>SHIFT</b> sprint · <b>L3 mando</b> sprint &nbsp;·&nbsp; <b>ESPACIO</b> saltar &nbsp;·&nbsp; <b>R</b> recargar &nbsp;·&nbsp; <b>B</b> bloom &nbsp;·&nbsp; <b>T</b> retro &nbsp;·&nbsp; <b>ESC</b> pausa<br>
+    <b>1..6</b> / <b>RUEDA</b> / <b>LB·RB</b> cambiar arma (puños, vecinal, MORIS-12, ametralladora, asador, Kira…)<br>
+    Sobreviví a las oleadas. <b>La munición se acaba</b>: juntá cajas de vida, armadura y munición
+    en la arena — los enemigos sueltan drops. Sin balas, los <b>puños</b> siempre responden.<br>
   </div>
   <div class="controls" id="controlsTouch" style="display:none">
     <b>JOYSTICK</b> (tercio izquierdo) moverse · fondo = <b>SPRINT</b><br>
     <b>ARRASTRÁ</b> en el resto de la pantalla para apuntar<br>
-    <b>FIRE</b> disparar (mantené) · <b>RECARGAR</b> · <b>SALTAR</b> · sobreviví y juntá cajas
+    <b>FIRE</b> disparar (mantené) · <b>◀ ▶</b> cambiar arma · <b>RECARGAR</b> · <b>SALTAR</b> · sobreviví y juntá cajas
   </div>
   <div class="cta" id="startbtn">CLIC PARA JUGAR</div>
   <div class="stat-line"><span id="rec">Recomendado: PC con mouse.</span> Mejor score: <span class="best" id="bestmenu">0</span></div>

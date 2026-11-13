@@ -143,23 +143,137 @@ export function makeEnemySprite(type, scale = 4) {
   return { canvas: cv, frames: 2, frameW: f0.width, frameH: f0.height };
 }
 
-// ---- viewmodel del arma en primera persona (brazo + cañón pixelado, idle 2 frames)
-// NB (fix E3): los rectPx/px acá abajo omitían el argumento `s` de escala (quedaba el
-// color en su posición → NaN en fillRect). Nada lo renderizaba aún (viewmodel todavía
-// es 3D), pero E4 lo enchufa tal cual: pasado de escala restaurado, arte intacto.
-export function makeWeaponSprite(accent = '#54f0ff', scale = 3) {
+/* ============================================================ E4a — viewmodels de arma
+   (brazo + arma pixelados, perspectiva forzada Doom: cañón hacia arriba-izquierda).
+   makeWeaponSprite(silhouette, accent): una SILUETA por familia de arma, todas con el
+   MISMO lenguaje gráfico (grano 96×72, chapa #2b2f3a/#3a3f4c, guante #3a2f28 y un acento
+   emisivo por arma que viene en `accent`). Cada silueta tiene su boca de disparo
+   (frame `muzzle` en celdas lógicas) → game.js ancla ahí el fogonazo del viewmodel, así
+   el destello sale del cañón correcto en las 6 familias (y en las de E4b: 'twin',
+   'rail' y 'orb' para changó/riel/compilador).
+   NB: rectPx/px reciben SIEMPRE el argumento `s` de escala (fix E3: omitirlo daba NaN
+   en fillRect). Las siluetas se pintan 100% opacas: el material del viewmodel usa
+   alphaTest 0.5 y la transparencia suave se recortaría a media. */
+
+// guante + antebrazo abajo-derecha: comunes a TODAS las siluetas (mismo estilo 16-bit)
+function gunHand(c, s) {
+  rectPx(c, 56, 48, 22, 18, s, '#3a2f28');    // guante
+  rectPx(c, 56, 48, 22, 3, s, '#5a4a3e');     // dorso iluminado
+  rectPx(c, 66, 58, 12, 10, s, '#2e261f');    // antebrazo (sale del cuadro)
+  rectPx(c, 56, 51, 3, 4, s, '#241d17');      // puño
+}
+
+// cañón hueco en "V" de pixel art (paredes laterales + boca): base de escopetas.
+// Por fila: pared izq en (xL − t·4), pared der en (xR + t·4 − w) y adentro el hueco,
+// cuyo ancho se calcula EXACTO entre las dos paredes (sin solapar la derecha).
+function vBarrel(c, s, xL, xR, yTop, yBot, colW, colIn) {
+  for (let i = 0; yTop + i < yBot; i++) {
+    const t = i / (yBot - yTop);
+    const w = Math.max(1, Math.round(1.5 + t * 4));
+    const lx = Math.round(xL - t * 4), rx = Math.round(xR + t * 4 - w);
+    rectPx(c, lx, yTop + i, w, 1, s, colW);
+    rectPx(c, rx, yTop + i, w, 1, s, colW);
+    rectPx(c, lx + w, yTop + i, rx - lx - w, 1, s, colIn);
+  }
+}
+
+const SIL = {
+  // puños: guante enorme de nudillos emisivos (Doom fist), sin arma
+  fists: { muzzle: [34, 26], draw(c, s, ac) {
+    rectPx(c, 52, 56, 26, 14, s, '#3a2f28');      // antebrazo
+    rectPx(c, 48, 34, 26, 22, s, '#4a3b31');      // puño
+    rectPx(c, 48, 34, 26, 4, s, '#5f4d40');       // nudillos iluminados
+    rectPx(c, 48, 34, 5, 10, s, ac);              // acento: placa del guante (bloom)
+    rectPx(c, 50, 39, 6, 4, s, '#241d17');
+    rectPx(c, 58, 39, 6, 4, s, '#241d17');        // hendijas de nudillos
+    rectPx(c, 40, 36, 8, 14, s, '#4a3b31');       // pulgar
+    rectPx(c, 46, 52, 22, 4, s, '#241d17');       // puño/cierre
+    rectPx(c, 49, 34, 2, 2, s, '#fff');           // brillo metálico
+  } },
+  // vecinal: pistoletita barrial con riel emisivo (la vieja fila del rifle XM-9)
+  pistol: { muzzle: [45, 19], draw(c, s, ac) {
+    gunHand(c, s);
+    rectPx(c, 40, 18, 10, 34, s, '#2b2f3a');      // cañón vertical
+    rectPx(c, 40, 18, 10, 3, s, ac);              // boca emisiva
+    rectPx(c, 36, 30, 18, 14, s, '#3a3f4c');      // cajera
+    rectPx(c, 52, 40, 12, 16, s, '#2b2f3a');      // culata hacia el guante
+    rectPx(c, 44, 34, 3, 8, s, ac);               // detalle emisivo
+    px(c, 44, 20, s, '#fff'); px(c, 46, 20, s, '#fff');
+  } },
+  // moris12: boca grande octogonal + tubo del cargador + bomba de bombeo
+  shotgun: { muzzle: [47, 15], draw(c, s, ac) {
+    gunHand(c, s);
+    vBarrel(c, s, 42, 52, 12, 30, '#2b2f3a', '#12151d');  // boca acampanada
+    rectPx(c, 41, 11, 14, 3, s, '#3a3f4c');               // anillo de boca
+    rectPx(c, 43, 12, 10, 2, s, ac);                      // banda emisiva del anillo
+    rectPx(c, 58, 30, 26, 8, s, '#2b2f3a');               // cuerpo sobre el guante
+    rectPx(c, 38, 30, 40, 12, s, '#3a3f4c');              // cajera
+    rectPx(c, 52, 34, 4, 14, s, ac);                      // detalle emisivo
+    rectPx(c, 38, 44, 16, 7, s, '#4a3324');               // bomba de bombeo (madera)
+    rectPx(c, 38, 44, 16, 2, s, '#6b4c33');               // brillo de la madera
+  } },
+  // ametralladora: cañón largo acanalado, cargador curvo, cantidad de remaches
+  smg: { muzzle: [33, 12], draw(c, s, ac) {
+    gunHand(c, s);
+    rectPx(c, 30, 10, 6, 36, s, '#2b2f3a');       // cañón largo
+    rectPx(c, 30, 10, 6, 3, s, ac);               // boca emisiva
+    px(c, 30, 18, s, '#12151d'); px(c, 35, 18, s, '#12151d'); // estrías externas
+    px(c, 30, 26, s, '#12151d'); px(c, 35, 26, s, '#12151d');
+    px(c, 30, 34, s, '#12151d'); px(c, 35, 34, s, '#12151d');
+    rectPx(c, 34, 26, 20, 14, s, '#3a3f4c');      // cajera
+    rectPx(c, 54, 36, 12, 14, s, '#2b2f3a');      // culata
+    rectPx(c, 40, 40, 10, 20, s, '#2b2f3a');      // cargador curvo (tramos escalonados)
+    rectPx(c, 42, 52, 10, 10, s, '#2b2f3a');
+    rectPx(c, 44, 60, 10, 4, s, '#2b2f3a');
+    rectPx(c, 42, 30, 4, 2, s, ac);               // luz de carga
+    px(c, 32, 12, s, '#fff'); px(c, 34, 12, s, '#fff'); // chispazo de cañón
+  } },
+  // asador: tanque a la espalda, manguera, boquilla con llama perpetua
+  flamer: { muzzle: [30, 22], draw(c, s, ac) {
+    gunHand(c, s);
+    rectPx(c, 62, 20, 16, 26, s, '#3a3f4c');      // tanque de células
+    rectPx(c, 62, 20, 16, 3, s, '#59616f');       // tapa del tanque
+    rectPx(c, 66, 26, 8, 14, s, '#141a24');       // ventana de nivel
+    rectPx(c, 67, 28, 6, 4, s, ac);               // células (fila 1)
+    rectPx(c, 67, 34, 6, 4, s, ac);               // células (fila 2)
+    rectPx(c, 52, 38, 10, 4, s, '#2b2f3a');       // válvula tanque→manguera
+    rectPx(c, 42, 40, 12, 12, s, '#2b2f3a');      // manguera (tramos escalonados)
+    rectPx(c, 36, 34, 8, 10, s, '#2b2f3a');
+    rectPx(c, 30, 26, 8, 10, s, '#3a3f4c');       // cuerpo de boquilla
+    rectPx(c, 27, 24, 4, 6, s, '#12151d');        // boca
+    rectPx(c, 28, 22, 3, 2, s, '#ffe66b');        // llama: núcleo
+    rectPx(c, 26, 19, 5, 4, s, ac);               // llama: media
+    rectPx(c, 24, 16, 4, 3, s, '#ff8a3a');        // llama: punta
+    px(c, 25, 14, s, '#ff5a1e');
+  } },
+  // kira: tubo lanzacohetes con visor, ogiva asomando y tope trasero
+  rocket: { muzzle: [31, 14], draw(c, s, ac) {
+    gunHand(c, s);
+    rectPx(c, 26, 16, 56, 14, s, '#3a4a44');      // tubo (verde militar, coherente con ammoCohetes)
+    rectPx(c, 26, 16, 56, 3, s, '#566b60');       // brillo superior del tubo
+    rectPx(c, 26, 27, 56, 3, s, '#24312c');       // sombra inferior
+    rectPx(c, 22, 13, 6, 20, s, '#2b2f3a');       // boca (aro ancho)
+    rectPx(c, 23, 16, 3, 12, s, '#12151d');       // hueco del tubo
+    rectPx(c, 23, 20, 3, 3, s, ac);               // acento del aro
+    rectPx(c, 44, 8, 14, 8, s, '#2b2f3a');        // visor
+    rectPx(c, 47, 10, 8, 3, s, ac);               // lente emisivo
+    rectPx(c, 29, 17, 9, 5, s, '#c9ced6');        // ogiva asomando
+    px(c, 29, 18, s, '#e0473a'); px(c, 29, 20, s, '#e0473a'); // aletas rojas
+    rectPx(c, 70, 20, 4, 8, s, ac);               // franja de peligro trasera
+  } },
+  // ---- E4b (llegan con changó/riel/compilador):
+  // twin:  dos bocas V una al lado de la otra (changó, doble cañón)
+  // rail:  riel largo con dos prongs emisivos y bobinas (riel del Colastiné)
+  // orb:   brazo + guante con orbe argent flotante encima de la palma (compilador)
+};
+
+// silueta → canvas del viewmodel. accent = color emisivo del arma (ver WEAPONS en game.js).
+export function makeWeaponSprite(silhouette = 'pistol', accent = '#54f0ff', scale = 3) {
+  const S = SIL[silhouette];
+  if (!S) throw new Error('makeWeaponSprite: silueta desconocida: ' + silhouette);
   const W = 96, H = 72, { cv, c, s } = pixelCanvas(W, H, scale);
-  // guante / brazo abajo-derecha
-  rectPx(c, 58, 46, 20, 20, s, '#3a2f28');
-  rectPx(c, 58, 46, 20, 3, s, '#5a4a3e');
-  // cuerpo del arma (perspectiva forzada estilo Doom: cañón hacia arriba-izq)
-  rectPx(c, 40, 18, 10, 34, s, '#2b2f3a');   // cañón vertical
-  rectPx(c, 40, 18, 10, 3, s, accent);        // boca emisiva
-  rectPx(c, 36, 30, 18, 14, s, '#3a3f4c');   // cajera
-  rectPx(c, 52, 40, 12, 16, s, '#2b2f3a');   // culata hacia el guante
-  rectPx(c, 44, 34, 3, 8, s, accent);         // detalle emisivo
-  px(c, 44, 20, s, '#fff'); px(c, 46, 20, s, '#fff');
-  return { canvas: cv };
+  S.draw(c, s, accent);
+  return { canvas: cv, muzzle: [S.muzzle[0] * scale, S.muzzle[1] * scale] };
 }
 
 /* ============================================================ E3 — pickups del piso
