@@ -98,6 +98,15 @@
     font-size:12px; letter-spacing:.2em; color:#7fa8c9; opacity:.65;
     text-shadow:0 0 8px rgba(84,240,255,.25); }
 
+  /* chip de mando (al lado del FPS): "sin mando" tenue / "conectado" neón.
+     game.js lo oculta del todo si el navegador no tiene Gamepad API (no secure context). */
+  #gpadchip { position:fixed; top:17px; left:200px; z-index:26; pointer-events:none;
+    font-size:11px; letter-spacing:.12em; color:#5b7d9c; opacity:.8;
+    padding:2px 10px; border:1px solid rgba(84,240,255,.22); border-radius:999px;
+    background:rgba(4,10,20,.55); white-space:nowrap; }
+  #gpadchip.on { color:#8dfaff; opacity:1; border-color:rgba(84,240,255,.6);
+    box-shadow:0 0 12px rgba(84,240,255,.28); }
+
   /* ---------- controles táctiles (display:none: game.js agrega .on solo si es táctil) ----------
      El overlay no tapa nada (pointer-events:none); solo los botones y el joystick capturan.
      Botones con margen respecto al borde para que el pulgar descanse cómodo y el arrastre
@@ -105,6 +114,9 @@
   #touchhud { position:fixed; inset:0; z-index:27; pointer-events:none; display:none; }
   #touchhud.on { display:block; }
   #touchhud.on.hidden { display:none; } /* menú/pausa/muerte: oculto aún con .on */
+  /* mando real conectado: el overlay táctil se aparta aunque TOUCH_MODE sea true
+     (de dispositivo o forzado con ?touch=1). Sin mando, ?touch=1 sigue forzándolo. */
+  #touchhud.on.gpadhide { display:none; }
 
   /* joystick dinámico: la base fantasma aparece donde pisa el dedo (game.js mueve el transform) */
   #stick { position:absolute; left:0; top:0; width:116px; height:116px; margin:-58px 0 0 -58px;
@@ -178,6 +190,7 @@
 </div>
 <div id="dmg"></div>
 <div id="fps">-- FPS</div>
+<div id="gpadchip">🎮 SIN MANDO</div>
 
 <!-- HUD táctil: visible solo en modo táctil (.on lo agrega game.js). Los eventos de estos
      elementos nunca llegan al canvas (el toque "nace" en el botón), por eso el arrastre

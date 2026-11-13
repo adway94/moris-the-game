@@ -963,12 +963,20 @@ addEventListener('mousemove', e => {
   player.pitch = clamp(player.pitch - e.movementY * 0.0023, -1.5, 1.5);
 });
 
+// pausa única para las dos rutas: ESC/pérdida de pointer lock y Start del mando.
+// Despacha 'gamestate' para que dropTouch() suelte cualquier input táctil pegado.
+function enterPause() {
+  if (game.state !== 'play') return;
+  game.state = 'pause';
+  toggleFiring(false);
+  $('hud').classList.add('hidden');
+  $('pause').classList.remove('hidden');
+  dispatchEvent(new CustomEvent('gamestate', { detail: game.state }));
+}
+
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement !== renderer.domElement && game.state === 'play') {
-    game.state = 'pause';
-    toggleFiring(false);
-    $('hud').classList.add('hidden');
-    $('pause').classList.remove('hidden');
+    enterPause();
   }
 });
 
@@ -976,7 +984,13 @@ document.addEventListener('pointerlockchange', () => {
 // con arrastre (sección touch). En desktop es idéntico a antes.
 function lockAndPlay() {
   Sfx.init();
-  if (!TOUCH_MODE) renderer.domElement.requestPointerLock();
+  if (!TOUCH_MODE) {
+    // resume desde el mando (poll fuera de gesto): Chrome permite re-lockear poco después
+    // de un exitPointerLock propio; si no, la promesa rechaza → catch y seguimos con el
+    // look de mando igual (un reject sin catch ensuciaría la consola).
+    const pl = renderer.domElement.requestPointerLock();
+    if (pl && pl.catch) pl.catch(() => {});
+  }
   $('menu').classList.add('hidden');
   $('pause').classList.add('hidden');
   $('dead').classList.add('hidden');
@@ -1134,6 +1148,138 @@ if (TOUCH_MODE) {
   bindBtn(tjump, () => { player.jumpQueued = true; }, () => {});
 }
 
+/* ============================================================ gamepad (Gamepad API)
+   Mapeo (estándar W3C / "standard" layout):
+     Eje 0 stick izq X   → strafe        ┐ deadzone 0.18 con curva suave renormalizada
+     Eje 1 stick izq Y   → atrás/adelante┘ sign·t²; pisa al teclado SOLO si supera la
+                          deadzone: con el stick quieto WASD sigue funcionando.
+     Eje 2 stick der X   → yaw  (~2.6 rad/s a full deflection, misma curva muerta)
+     Eje 3 stick der Y   → pitch (~2.0 rad/s, clamp ±1.5). Suma deltas por frame sobre
+                           player.yaw/pitch: convive con mouse (movementX), pointer lock
+                           y arrastre táctil sin pelearse.
+     Botón 7  (RT analógico) → fuego: value > 0.35 u oprimido; integra con el flag
+                                `firing` de desktop/touch vía toggleFiring.
+     Botón 0  (A)     → salto (jumpQueued, igual que el botón táctil)
+     Botón 2  (X)     → tryReload()
+     Botón 4  (LB) ó 10 (L3) → sprint: mismo efecto que ShiftLeft (respeta el cooldown)
+     Botón 9  (Start) → pausa/reanudar (sale de pointer lock si estaba lockeado; el tap
+                        en el overlay o B/1 reanudan). En menú arranca; en muerte reintenta.
+     D-pad (12–15) y cualquier botón/dead de más: ignorados a propósito.
+   REQUIERE HTTPS: la Gamepad API solo existe en secure context. Por http:// en una IP
+   de la red local no hay navigator.getGamepads → usar serve_https.py (cert self-signed).
+   Detección: eventos gamepadconnected/disconnected mueven el chip HUD (#gpadchip) y el
+   índice preferido, pero el estado se pollea CADA FRAME desde loop() (el objeto puede
+   aparecer sin evento; en pausa hay que seguir polleando para que Start reanude). Sin
+   mando el coste es un early return; sin API (http), ni eso. */
+const GP_API = !!(navigator.getGamepads || navigator.webkitGetGamepads);
+const GP_DZ = 0.18, GP_YAW = 2.6, GP_PITCH = 2.0, GP_TRIG = 0.35;
+const gp = {
+  connected: false, index: -1,
+  mf: 0, mr: 0,      // stick izq curvado (+ adelante / + der); 0 = quieto → no pisa a WASD
+  lookX: 0, lookY: 0, // stick der curvado
+  sprint: false,
+  wasFire: false,    // flanco del gatillo: toggleFiring solo se escribe en el cambio
+  prev: {},          // flancos de los botones "de acción" (A/B/X/Start)
+};
+// curva muerta renormalizada: 0 bajo la deadzone, luego sign·t² (arranque suave, tope 1)
+const gpCurve = v => {
+  const a = Math.abs(v);
+  if (a <= GP_DZ) return 0;
+  const t = (a - GP_DZ) / (1 - GP_DZ);
+  return (v < 0 ? -1 : 1) * t * t;
+};
+const gpPad = () => {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : navigator.webkitGetGamepads();
+  if (!pads) return null;
+  const p = pads[gp.index];
+  if (p && p.connected) return p;
+  for (const q of pads) if (q && q.connected) return q; // el evento puede no haber llegado
+  return null;
+};
+const gpDown = (pad, i) => { const b = pad.buttons[i]; return !!b && (b.pressed || b.value > 0.5); };
+const gpEdge = (pad, i) => { // true solo en el frame del flanco de presión
+  const now = gpDown(pad, i), was = gp.prev[i] === true;
+  gp.prev[i] = now;
+  return now && !was;
+};
+
+const gchip = $('gpadchip');
+if (gchip && !GP_API) gchip.style.display = 'none'; // navegador sin API: chip fuera
+function gpSetConnected(on, index = -1) {
+  if (gp.connected === on && !on) { gp.index = -1; return; }
+  const changed = gp.connected !== on;
+  gp.connected = on; gp.index = index;
+  if (changed) {
+    if (gchip) {
+      gchip.textContent = on ? '🎮 CONECTADO' : '🎮 SIN MANDO';
+      gchip.classList.toggle('on', on);
+    }
+    // un mando real manda: con mando conectado el overlay táctil se oculta aunque
+    // TOUCH_MODE sea true (de dispositivo o forzado con ?touch=1). Sin mando, todo
+    // como antes: ?touch=1 sigue forzando el overlay manual.
+    if (TOUCH_MODE) $('touchhud').classList.toggle('gpadhide', on);
+  }
+}
+addEventListener('gamepadconnected', e => gpSetConnected(true, e.gamepad.index));
+addEventListener('gamepaddisconnected', () => { // revalidamos por poll: el index del
+  const pad = gpPad();                            // evento no siempre coincide con el real
+  if (pad) gpSetConnected(true, pad.index);
+  else gpSetConnected(false);
+});
+
+function pollGamepad(dt) {
+  if (!GP_API) return;                    // http:// (no secure): cero overhead
+  const pad = gpPad();
+  if (!pad) {
+    if (gp.connected) {                   // desconectado en frío (a veces sin evento)
+      gpSetConnected(false);
+      if (gp.wasFire) { toggleFiring(false); gp.wasFire = false; }
+      gp.mf = gp.mr = gp.lookX = gp.lookY = 0; gp.sprint = false;
+    }
+    return;
+  }
+  if (!gp.connected) gpSetConnected(true, pad.index); // apareció sin evento
+
+  const ax = pad.axes || [];
+  gp.mf = -gpCurve(ax[1] || 0); gp.mr = gpCurve(ax[0] || 0);
+  gp.lookX = gpCurve(ax[2] || 0); gp.lookY = gpCurve(ax[3] || 0);
+  gp.sprint = gpDown(pad, 4) || gpDown(pad, 10); // LB o L3
+
+  // Look: suma deltas por frame; el mouse (movementX) y el drag táctil siguen iguales.
+  if (game.state === 'play') {
+    if (gp.lookX) player.yaw -= gp.lookX * GP_YAW * dt;
+    if (gp.lookY) player.pitch = clamp(player.pitch - gp.lookY * GP_PITCH * dt, -1.5, 1.5);
+  }
+
+  // RT (7): analógico > 0.35 u oprimido digital; escribe `firing` solo en los flancos.
+  const fire = gpDown(pad, 7) || (pad.buttons[7] && pad.buttons[7].value > GP_TRIG);
+  if (fire !== gp.wasFire) {
+    if (game.state === 'play') toggleFiring(fire);
+    gp.wasFire = fire;
+  }
+  // Flancos: se calculan SIEMPRE (los botones no usados se descartan) para que gp.prev
+  // quede sincronizado en cualquier estado; sostener un botón a través de una transición
+  // de estado no dispara una segunda acción.
+  const eA = gpEdge(pad, 0), eX = gpEdge(pad, 2);
+  const eStart = gpEdge(pad, 9), eB = gpEdge(pad, 1);
+
+  if (game.state === 'play') {
+    if (eA) player.jumpQueued = true; // A
+    if (eX) tryReload();              // X
+  }
+
+  // Start (9): pausa con los dos caminos del flujo existente (pointer lock → el evento
+  // pointerlockchange hace el resto; táctil o sin lock → enterPause directo).
+  if (eStart) {
+    if (game.state === 'play') {
+      if (!TOUCH_MODE && document.pointerLockElement === renderer.domElement) document.exitPointerLock();
+      else enterPause();
+    } else if (game.state === 'pause') lockAndPlay();
+    else playFromMenu(); // menú arranca / muerte reintenta (Start único mando posible)
+  }
+  if (game.state === 'pause' && eB) lockAndPlay(); // B reanuda
+}
+
 /* ============================================================ shooting */
 const raycaster = new THREE.Raycaster();
 raycaster.far = 150;
@@ -1212,10 +1358,13 @@ function update(dt) {
   const f = _pf.set(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
   const r = _pr.set(-f.z, 0, f.x);
   const wish = _pw.set(0, 0, 0);
-  if (keys['KeyW']) wish.add(f);
-  if (keys['KeyS']) wish.sub(f);
-  if (keys['KeyD']) wish.add(r);
-  if (keys['KeyA']) wish.sub(r);
+  // stick izq de mando (mf/mr vienen curvados del poll; 0 = quieto): pisa al teclado por
+  // eje solo cuando supera la deadzone → WASD intacto con el mando en reposo
+  const kbF = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0);
+  const kbR = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
+  const mf = gp.mf || kbF, mr = gp.mr || kbR;
+  if (mf) wish.addScaledVector(f, mf);
+  if (mr) wish.addScaledVector(r, mr);
   // joystick táctil: empuje analógico (|wish| = mag ≤ 1). WASD normaliza a 1 abajo igual que antes.
   if (touch.stickId !== -1 && touch.mag > 0.02) {
     wish.x += f.x * touch.wishF + r.x * touch.wishR;
@@ -1229,8 +1378,9 @@ function update(dt) {
 
   player.sprintCd -= dt; player.sprintT -= dt;
   let speed = SPEED;
-  // sprint: Shift de desktop o joystick clavado al fondo (>0.92 del radio), mismo cooldown
-  if ((keys['ShiftLeft'] || (touch.stickId !== -1 && touch.mag > 0.92)) &&
+  // sprint: Shift de desktop, LB/L3 del mando o joystick clavado al fondo (>0.92 del
+  // radio), mismo cooldown
+  if ((keys['ShiftLeft'] || gp.sprint || (touch.stickId !== -1 && touch.mag > 0.92)) &&
       moving && player.sprintCd <= 0 && player.sprintT <= 0) {
     player.sprintT = 0.3; player.sprintCd = 1.3;
   }
@@ -1417,6 +1567,7 @@ function autoDegrade(now) {
 function loop() {
   requestAnimationFrame(loop);
   const dt = Math.min(clock.getDelta(), 0.05);
+  pollGamepad(dt); // cada frame, play o pausa (Start tiene que poder reanudar)
   const prev = game.state;
   if (game.state === 'play') update(dt);
   if (game.state !== prev) dispatchEvent(new CustomEvent('gamestate', { detail: game.state })); // ex: muerte dentro de update → soltar input táctil
@@ -1436,7 +1587,9 @@ camera.rotation.order = 'YXZ';
 window.__dbg = () => ({ state: game.state, wave: game.wave, en: enemies.length,
   q: game.spawnQueue.length, hp: Math.round(player.hp), score: game.score,
   inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn,
-  touchMode: TOUCH_MODE, firing });
+  touchMode: TOUCH_MODE, firing, gamepad: gp.connected,
+  x: Math.round(player.pos.x * 10) / 10, z: Math.round(player.pos.z * 10) / 10,
+  yaw: Math.round(player.yaw * 100) / 100, pitch: Math.round(player.pitch * 100) / 100 });
 window.__probe = () => {
   if (!enemies.length) return 'no enemies';
   const o = camera.getWorldPosition(new THREE.Vector3());
