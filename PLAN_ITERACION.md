@@ -31,7 +31,7 @@ Cada nivel termina al matar la oleada+mini-boss → puerta se abre → nota de t
 4. Arma en primera persona: viewmodel con textura pixelada + idle bob 2 frames (Doom).
 
 ## ETAPAS (una por una, commit al validar cada una)
-- **E1 — Pipeline retro**: render-to-target + upscale nearest-neighbour (toggle R para comparar), banded fog. Validar visual + FPS no se hunde. NO toca gameplay.
+- **E1 — Pipeline retro**: render-to-target + upscale nearest-neighbour (toggle **T** para comparar — R quedó en recargar), banded fog. Validar visual + FPS no se hunde. NO toca gameplay.
 - **E2 — Enemigos sprite billboard**: convertir los 3 tipos actuales a sprites pixel-art canvas con animación y flip. Mantener hitboxes/IA. Validar kills siguen funcionando.
 - **E3 — Sistema de recursos**: vida/armadura/munición tipada + pickups + HUD Doom-like (barra doble, contador arma+munición). Quitar regen actual.
 - **E4 — Arsenal 10 armas**: datos por arma (daño, cadencia, spread, tipo munición, retroceso, sprite viewmodel), desbloqueo, cambio con rueda/teclas 1-0/gamepad dpad. Rebalancear enemigos contra armas.
@@ -46,7 +46,7 @@ Cada nivel termina al matar la oleada+mini-boss → puerta se abre → nota de t
 - Cada etapa = un commit. Si una etapa queda trancada, la dejo marcada acá con el porqué y sigo con la siguiente independiente.
 
 ## Estado (ir actualizando)
-- [ ] E1 pipeline retro
+- [x] E1 pipeline retro — pixelación nearest a ~360p (divisor entero del canvas, dpr-independiente) + banded fog 8 bandas en entorno. Toggle en **T** (el plan decía R, pero R es RECARGAR y E1 no toca gameplay). Default retro ON; visible en HUD FPS y __dbg.retro.
 - [ ] E2 enemigos sprite
 - [ ] E3 recursos vida/escudo/munición
 - [ ] E4 arsenal 10 armas

@@ -185,19 +185,53 @@ scene.add(stars);
 }
 
 /* ============================================================ post-processing
-   RenderPass (HDR, MSAA x4) -> UnrealBloomPass -> OutputPass (tonemap + sRGB).
+   RenderPass (HDR) -> UnrealBloomPass -> OutputPass (tonemap + sRGB).
    Con composer el tonemap/sRGB del renderer NO se aplica en los pases intermedios
    (solo OutputPass al screen), por eso el neón HDR atraviesa el umbral 0.75 y hace
-   bloom real. */
-const rtMain = new THREE.WebGLRenderTarget(
-  Math.max(1, Math.floor(innerWidth * renderer.getPixelRatio())),
-  Math.max(1, Math.floor(innerHeight * renderer.getPixelRatio())),
-  { type: THREE.HalfFloatType, samples: 4 });
-const composer = new EffectComposer(renderer, rtMain);
+   bloom real.
+
+   PIPELINE RETRO E1 (toggle T): el composer renderiza la escena a un framebuffer
+   interno de altura fija ~360 px y el último pase lo estira al canvas con filtrado
+   NEAREST: poniendo NearestFilter en los RT del composer, el quad de OutputPass es en
+   sí el upscale — pixelación Doom/Boltgun sin pases ni shaders extra.
+   - Resolución interna = px de dispositivo / divisor ENTERO (retroSize): pixeles siempre
+     cuadrados (sin shimmer al moverse) y ~360p sin importar devicePixelRatio.
+   - Retro baja además el MSAA (samples 0): bordes duros crunchy, que es el look; el
+     modo normal (T off) vuelve a dpr ≤ MAX_DPR + MSAA x4, idéntico a pre-E1.
+   - samples es inmutable en un WebGLRenderTarget: el toggle intercambia los targets
+     internos con composer.reset() (en r160 clone()/reset() preservan samples y
+     filtros de la textura). */
+let retroOn = true;   // default: retro ON (nueva estética); T la alterna
+const RETRO_H = 360;  // altura objetivo del buffer interno, en px de dispositivo
+
+// un RT para cada ping-pong del composer: HalfFloat (el HDR debe llegar intacto
+// al bloom). Filtros y MSAA según el modo: retro Nearest/sin MSAA, normal Linear/x4.
+function makeComposerTarget() {
+  const rt = new THREE.WebGLRenderTarget(2, 2, {
+    type: THREE.HalfFloatType, samples: retroOn ? 0 : 4,
+  });
+  const f = retroOn ? THREE.NearestFilter : THREE.LinearFilter;
+  rt.texture.magFilter = f; rt.texture.minFilter = f; rt.texture.generateMipmaps = false;
+  return rt;
+}
+
+// canvas en px de dispositivo dividido por un factor entero f que deja la altura en
+// ~RETRO_H: 1920×1080 → f=3 → 640×360; 2560×1440 → f=4 → 640×360; 1366×768 → f=2 →
+// 683×384. El divisor entero hace el upscale nearest uniforme en ambos ejes, y como f
+// absorbe el dpr la resolución interna es independiente del devicePixelRatio.
+function retroSize() {
+  const devW = Math.max(2, Math.round(innerWidth * maxDpr()));
+  const devH = Math.max(2, Math.round(innerHeight * maxDpr()));
+  const f = clamp(Math.round(devH / RETRO_H), 1, 16);
+  return [Math.max(2, Math.round(devW / f)), Math.max(2, Math.round(devH / f))];
+}
+
+const composer = new EffectComposer(renderer, makeComposerTarget());
 composer.addPass(new RenderPass(scene, camera));
 // bloom a MEDIA resolución: la pirámide de mip de UnrealBloomPass arranca en 1/2 del
 // buffer efectivo -> cada uno de sus ~11 fullscreen passes cuesta 1/4. Clave para PCs
 // flojos / SwiftShader, donde el composer a resolución completa hundía el FPS.
+// Con retro activo la pirámide arranca de los ~360p: bloom muy barato.
 const BLOOM_SCALE = 0.5;
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(innerWidth * BLOOM_SCALE, innerHeight * BLOOM_SCALE), 0.55, 0.6, 0.75);
@@ -208,25 +242,44 @@ bloomPass.setSize = (w, h) =>
   bloomSetSizeFull(Math.max(1, Math.round(w * BLOOM_SCALE)), Math.max(1, Math.round(h * BLOOM_SCALE)));
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
-// normaliza tamaños: con RT custom el composer inicializa _width al tamaño efectivo
-// (ya multiplicada por pixelRatio) y addPass volvería a escalarla en pantallas HiDPI.
-// pixelRatio idéntico al del renderer (dpr cap MAX_DPR) para que los buffers coincidan.
-composer.setPixelRatio(maxDpr());
-composer.setSize(innerWidth, innerHeight);
 
-/* bloom on/off: off saltea el composer y va directo por renderer.render (en screen el
-   renderer aplica ACES + sRGB, misma terminación que OutputPass). */
+// tamaños: retro → pixelRatio 1 y tamaño lógico = resolución baja (el buffer interno
+// queda exactamente en low-res; el canvas conserva sus px nativos y OutputPass estira
+// con nearest). Normal → el pixelRatio del renderer (dpr cap MAX_DPR) y tamaño CSS,
+// como antes del E1. setPixelRatio internamente re-sizea; el setSize que sigue fija
+// el tamaño lógico definitivo en ambos modos.
+function applyComposerSize() {
+  if (retroOn) {
+    const [w, h] = retroSize();
+    composer.setPixelRatio(1);
+    composer.setSize(w, h);
+  } else {
+    composer.setPixelRatio(maxDpr());
+    composer.setSize(innerWidth, innerHeight);
+  }
+}
+function setRetro(on) {
+  if (on === retroOn) return;
+  retroOn = on;
+  composer.reset(makeComposerTarget()); // swap de targets: samples/filtros del nuevo modo
+  applyComposerSize();
+}
+applyComposerSize(); // normaliza los tamaños iniciales (arranca en retro)
+
+/* bloom on/off: off desactiva el pase de bloom (bloomPass.enabled en el loop). Con
+   retro sigue haciendo falta el composer (el upscale nearest vive en su último pase);
+   sin retro Y sin bloom se va directo por renderer.render (en screen el renderer
+   aplica ACES + sRGB, misma terminación que OutputPass). */
 let bloomOn = true;
 function setBloom(on) { bloomOn = on; }
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
-  const pr = maxDpr(); // mismo cap de dpr para renderer y composer
+  const pr = maxDpr(); // mismo cap de dpr para renderer y composer (modo normal)
   renderer.setPixelRatio(pr);
   renderer.setSize(innerWidth, innerHeight);
-  composer.setPixelRatio(pr); // re-escala con _width/_height actuales (CSS px)
-  composer.setSize(innerWidth, innerHeight);
+  applyComposerSize(); // retro: re-deriva el buffer interno con el aspect/dpr nuevo
 });
 
 /* lights */
@@ -465,6 +518,42 @@ const rimMagenta = new THREE.PointLight(0xff3bd8, 80, 0, 2);
 rimMagenta.castShadow = false;
 rimMagenta.position.set(ARENA - 6, 12, ARENA - 6);
 scene.add(rimCyan, rimMagenta);
+
+/* ============================================================ banded fog (E1)
+   Profundidad por pasos estilo Doom/Boltgun: en vez del gradiente suave de FogExp2,
+   el factor de niebla del material se cuantiza a FOG_BANDS bandas. onBeforeCompile
+   reemplaza el chunk fog_fragment por la misma fórmula de three r160 (sigue usando
+   los uniforms fogColor/fogDensity que provienen de scene.fog: la atmósfera y el
+   color NO cambian) más un floor(f·niveles)/niveles.
+   Se aplica a todo el material de entorno construido hasta acá —piso, muros, trims,
+   obstáculos, franjas y bulbos—: en este punto de la escena solo viven cielo+estrellas
+   (con fog:false, se saltan) y la arena. Arma, FX, pickups y enemigos sprite (E2) NO
+   se parchan. Ojo r160: el cache de programas NO distingue materiales por su
+   onBeforeCompile, así que customProgramCacheKey aísla esta variante de cualquier
+   material sin parchar que comparta defines. */
+const FOG_BANDS = 8; // 8 bandas en todo el rango de la niebla: pasos visibles, aún legible
+function bandedFog(mat) {
+  if (!mat || mat.fog === false || mat.userData.bandedFog) return mat;
+  mat.userData.bandedFog = true; // materiales compartidos (wallMat/obMat/trimMat): 1 parche
+  mat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>', `
+      #ifdef USE_FOG
+        #ifdef FOG_EXP2
+          float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+        #else
+          float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+        #endif
+        fogFactor = floor( fogFactor * ${FOG_BANDS.toFixed(1)} ) / ${FOG_BANDS.toFixed(1)};
+        gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
+      #endif`);
+  };
+  mat.customProgramCacheKey = () => 'bandfog' + FOG_BANDS;
+  return mat;
+}
+scene.traverse(o => {
+  if (!o.isMesh) return;
+  (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => bandedFog(m));
+});
 
 /* ============================================================ player */
 const EYE = 1.7;
@@ -949,6 +1038,7 @@ addEventListener('keydown', e => {
   keys[e.code] = true;
   if (e.code === 'KeyR') tryReload();
   if (e.code === 'KeyB') setBloom(!bloomOn); // toggle manual de bloom (anula/rehace el auto-off)
+  if (e.code === 'KeyT') setRetro(!retroOn); // toggle pixelación retro (R es recargar: retro vive en T)
   if (e.code === 'Space') e.preventDefault();
 });
 addEventListener('keyup', e => keys[e.code] = false);
@@ -1548,7 +1638,9 @@ let fpsN = 0, fpsLast = performance.now();
 
 /* auto-degrade (PCs flojos / phones / SwiftShader): fps promediado en ventanas de 2 s
    solo en modo play; dos ventanas seguidas por debajo de 28 apagan el bloom UNA vez.
-   Nunca se re-enciende solo; B lo puede reactivar manualmente. */
+   Nunca se re-enciende solo; B lo puede reactivar manualmente. El retro NO se toca
+   acá: retro ON es el modo barato (render a ~360p); apagarlo subiría el costo de
+   render — dirección equivocada bajo problema de rendimiento. */
 const FPS_WINDOW_MS = 2000, FPS_FLOOR = 28;
 let winFrames = 0, winT0 = performance.now(), lowWindows = 0;
 function autoDegrade(now) {
@@ -1572,13 +1664,19 @@ function loop() {
   if (game.state === 'play') update(dt);
   if (game.state !== prev) dispatchEvent(new CustomEvent('gamestate', { detail: game.state })); // ex: muerte dentro de update → soltar input táctil
   updateWorldFx(dt, clock.elapsedTime);
-  if (bloomOn) composer.render();
-  else renderer.render(scene, camera); // path directo: cero costo de composer
+  // retro necesita el composer SIEMPRE (el upscale nearest es su último pase); el bloom
+  // solo añade el UnrealBloomPass. Sin retro y sin bloom: renderer directo, costo cero.
+  if (retroOn || bloomOn) {
+    bloomPass.enabled = bloomOn;
+    composer.render();
+  } else {
+    renderer.render(scene, camera); // path directo: cero costo de composer
+  }
   fpsN++;
   const now = performance.now();
   autoDegrade(now);
   if (now - fpsLast >= 1000) { // FPS discreto, 1 actualización por segundo
-    fpsEl.textContent = `${Math.round(fpsN * 1000 / (now - fpsLast))} FPS · bloom ${bloomOn ? 'on' : 'off'}`;
+    fpsEl.textContent = `${Math.round(fpsN * 1000 / (now - fpsLast))} FPS · bloom ${bloomOn ? 'on' : 'off'} · retro ${retroOn ? 'on' : 'off'}`;
     fpsN = 0; fpsLast = now;
   }
 }
@@ -1586,7 +1684,7 @@ camera.position.copy(player.pos);
 camera.rotation.order = 'YXZ';
 window.__dbg = () => ({ state: game.state, wave: game.wave, en: enemies.length,
   q: game.spawnQueue.length, hp: Math.round(player.hp), score: game.score,
-  inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn,
+  inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn, retro: retroOn,
   touchMode: TOUCH_MODE, firing, gamepad: gp.connected,
   x: Math.round(player.pos.x * 10) / 10, z: Math.round(player.pos.z * 10) / 10,
   yaw: Math.round(player.yaw * 100) / 100, pitch: Math.round(player.pitch * 100) / 100 });
