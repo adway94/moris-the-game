@@ -44,9 +44,9 @@
 
   /* ---------- crosshair (E4a): UN GLIFO DE DOM POR ARMA (solo CSS, sin assets).
      game.js pone #crosshair.wcross-<WEAPONS.cross> (melee|pistol|shotgun|smg|flamer|
-     rocket); los spans del "+" clásico se ocultan y el ::before dibuja el glifo con la
-     fuente monoespaciada. El campo `cross` es por ARMA (no por type): vecinal y
-     ametralladora comparten hitscan pero no mira. ---------- */
+     rocket|plasma|twin|rail|bfg); los spans del "+" clásico se ocultan y el ::before
+     dibuja el glifo con la fuente monoespaciada. El campo `cross` es por ARMA (no por
+     type): vecinal y ametralladora comparten hitscan pero no mira. ---------- */
   #crosshair { position:absolute; left:50%; top:50%; width:22px; height:22px;
     transform:translate(-50%,-50%); color:#8dfaff; text-shadow:0 0 6px rgba(141,250,255,.9); }
   #crosshair span { position:absolute; background:#8dfaff; box-shadow:0 0 6px rgba(141,250,255,.9); }
@@ -69,6 +69,31 @@
   #crosshair.wcross-smg::before { content:'+'; font-size:15px; line-height:.42;
     color:#b6ff5e;
     text-shadow:0 -5px 0 currentColor, 0 5px 0 currentColor, 0 0 8px rgba(182,255,94,.9); }
+  /* E4a/E4b — glifos nuevos: '∴' célula de plasma, '⇔' doble cañón (changó),
+     '‖' riel perforante, '◉' orbe BFG */
+  #crosshair.wcross-plasma::before { content:'∴'; font-size:16px; color:#5ee6ff;
+    text-shadow:0 0 8px rgba(94,230,255,.9); }
+  #crosshair.wcross-twin::before   { content:'⇔'; font-size:17px; color:#ffb057; }
+  #crosshair.wcross-rail::before   { content:'‖'; font-size:19px; color:#b6ff5e;
+    text-shadow:0 0 9px rgba(182,255,94,.9); }
+  #crosshair.wcross-bfg::before    { content:'◉'; font-size:19px; color:#6dff5e;
+    text-shadow:0 0 10px rgba(109,255,94,.95); }
+
+  /* E4b — anillo de CARGA del riel (#railring): rodea el glifo '‖' y se LLENA con las vars
+     --p1/--p2 que escribe game.js (0→1) en el #railring del crosshair. Conic-gradient +
+     máscara de anillo; dos vars hermanas porque WebKit aún no interpola @property. El
+     borde interior y el glow suben a blanco cian al cargar (.ready). Opacidad 0 fuera de
+     .show: es el mismo DOM en las 10 armas, solo el riel lo enciende. */
+  #railring { position:absolute; left:50%; top:50%; width:42px; height:42px;
+    transform:translate(-50%,-50%); border-radius:50%; pointer-events:none;
+    background:conic-gradient(currentColor calc(var(--p1, 0) * 360deg),
+      rgba(182,255,94,.12) 0);
+    -webkit-mask:radial-gradient(farthest-side, transparent 68%, #000 72%);
+    mask:radial-gradient(farthest-side, transparent 68%, #000 72%);
+    color:#b6ff5e; opacity:0; transition:opacity .08s; }
+  #railring.show { opacity:1; }
+  #railring.ready { --p1:1; --p2:1; filter:drop-shadow(0 0 7px rgba(182,255,94,.95));
+    border:1px solid rgba(235,255,220,.9); animation:pulse .3s ease-in-out infinite; }
 
   #hitmark { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%) rotate(45deg);
     width:26px; height:26px; opacity:0; }
@@ -103,8 +128,11 @@
     animation:pulse .35s linear infinite; }
 
   /* E4a: slot bar — fichas chiquitas estilo terminal bajo el nombre del arma:
-     "2 M12 34" = tecla, nombre corto, resto del pool. La activa en cian HDR. */
-  #slotbar { display:flex; gap:6px; justify-content:flex-end; margin-top:6px; flex-wrap:wrap; }
+     "2 M12 34" = tecla, shortName, resto del pool. La activa en cian HDR.
+     E4b (polish 4b): shortName de 4 letras limpias en la tabla WEAPONS (nada de "VECI")
+     y 8 px de margen derecho para que las fichas no peguen contra el borde del HUD. */
+  #slotbar { display:flex; gap:6px; justify-content:flex-end; margin-top:6px;
+    margin-right:8px; flex-wrap:wrap; }
   #slotbar .slot { font-size:10px; letter-spacing:.08em; color:#5b7d9c;
     padding:2px 6px; border:1px solid rgba(84,240,255,.22); border-radius:2px;
     background:rgba(4,10,20,.55); white-space:nowrap; }
@@ -121,6 +149,9 @@
     border:1px solid currentColor; border-radius:3px; background:rgba(4,10,20,.55);
     text-shadow:0 0 10px currentColor; animation:toastin .18s ease-out; }
   .toast.life { color:#0ee6a0; } .toast.armor { color:#5ab0ff; } .toast.ammo { color:#ffd166; }
+  /* E4b: aviso de pickup de ARMA — "OBTENIDA: MATE" entra grande y cian arsenal */
+  .toast.weapon { color:#5ee6ff; }
+  .toast.big { font-size:23px; letter-spacing:.3em; padding:8px 22px; }
   .toast.out { transition:opacity .35s; opacity:0; }
   @keyframes toastin { from{transform:translateY(8px); opacity:0} to{transform:none; opacity:1} }
 
@@ -237,7 +268,7 @@
 <body>
 
 <div id="hud" class="hidden">
-  <div id="crosshair"><span class="v"></span><span class="h"></span><span class="dot"></span></div>
+  <div id="crosshair"><span class="v"></span><span class="h"></span><span class="dot"></span><div id="railring"></div></div>
   <div id="hitmark"></div>
   <div id="topbar">
     <span>OLEADA <b id="wave">1</b></span>
@@ -283,14 +314,16 @@
   <div class="controls" id="controlsDesktop">
     <b>WASD</b> moverse &nbsp;·&nbsp; <b>MOUSE</b> apuntar &nbsp;·&nbsp; <b>CLIC IZQ</b> disparar<br>
     <b>SHIFT</b> sprint · <b>L3 mando</b> sprint &nbsp;·&nbsp; <b>ESPACIO</b> saltar &nbsp;·&nbsp; <b>R</b> recargar &nbsp;·&nbsp; <b>B</b> bloom &nbsp;·&nbsp; <b>T</b> retro &nbsp;·&nbsp; <b>ESC</b> pausa<br>
-    <b>1..6</b> / <b>RUEDA</b> / <b>LB·RB</b> cambiar arma (puños, vecinal, MORIS-12, ametralladora, asador, Kira…)<br>
+    <b>1..0</b> / <b>RUEDA</b> / <b>LB·RB</b> cambiar arma (arsenal completo: puños, vecinal, MORIS-12, ametralladora, asador, Kira, Mate, Changó, Riel y Compilador)<br>
+    El <b>RIEL</b> se carga <b>manteniendo el clic</b> (el anillo del centro se llena) y dispara al soltar<br>
     Sobreviví a las oleadas. <b>La munición se acaba</b>: juntá cajas de vida, armadura y munición
     en la arena — los enemigos sueltan drops. Sin balas, los <b>puños</b> siempre responden.<br>
   </div>
   <div class="controls" id="controlsTouch" style="display:none">
     <b>JOYSTICK</b> (tercio izquierdo) moverse · fondo = <b>SPRINT</b><br>
     <b>ARRASTRÁ</b> en el resto de la pantalla para apuntar<br>
-    <b>FIRE</b> disparar (mantené) · <b>◀ ▶</b> cambiar arma · <b>RECARGAR</b> · <b>SALTAR</b> · sobreviví y juntá cajas
+    <b>FIRE</b> disparar (mantené) · <b>◀ ▶</b> cambiar arma · <b>RECARGAR</b> · <b>SALTAR</b> · sobreviví y juntá cajas<br>
+    <b>MANTENÉ FIRE</b> con el RIEL cargando: dispara al soltar (y el COMPILADOR gasta 10 argents por orbe)
   </div>
   <div class="cta" id="startbtn">CLIC PARA JUGAR</div>
   <div class="stat-line"><span id="rec">Recomendado: PC con mouse.</span> Mejor score: <span class="best" id="bestmenu">0</span></div>

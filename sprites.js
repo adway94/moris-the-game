@@ -26,6 +26,25 @@ function ellipsePx(c, cx, cy, rx, ry, s, col) {
       if ((x * x) / (rx * rx) + (y * y) / (ry * ry) <= 1.05) px(c, cx + x, cy + y, s, col);
 }
 
+// E4b: variantes SIN relleno de ellipsePx — el borde del óvalo (anillo de energía de la
+// célula del plasma) y el relleno plano (la frontera <=1 es la misma regla, sin el 5% de
+// tolerancia del cuerpo para que el aro de 1 px quede parejo).
+function ellipseOutline(c, cx, cy, rx, ry, s, col) {
+  for (let y = -ry; y <= ry; y++)
+    for (let x = -rx; x <= rx; x++) {
+      const e = (x * x) / (rx * rx) + (y * y) / (ry * ry);
+      if (e <= 1 && ((x + 1) * (x + 1)) / (rx * rx) + (y * y) / (ry * ry) > 1) px(c, cx + x, cy + y, s, col);
+      if (e <= 1 && ((x - 1) * (x - 1)) / (rx * rx) + (y * y) / (ry * ry) > 1) px(c, cx + x, cy + y, s, col);
+      if (e <= 1 && (x * x) / (rx * rx) + ((y + 1) * (y + 1)) / (ry * ry) > 1) px(c, cx + x, cy + y, s, col);
+      if (e <= 1 && (x * x) / (rx * rx) + ((y - 1) * (y - 1)) / (ry * ry) > 1) px(c, cx + x, cy + y, s, col);
+    }
+}
+function ellipseFill(c, cx, cy, rx, ry, s, col) {
+  for (let y = -ry; y <= ry; y++)
+    for (let x = -rx; x <= rx; x++)
+      if ((x * x) / (rx * rx) + (y * y) / (ry * ry) <= 1) px(c, cx + x, cy + y, s, col);
+}
+
 // sombra de suelo: núcleo lleno + borde exterior en damero (dither opaco, compatible alphaTest)
 function shadowPx(c, cx, cy, rx, s, col = '#141019') {
   for (let dy = -1; dy <= 1; dy++)
@@ -143,14 +162,14 @@ export function makeEnemySprite(type, scale = 4) {
   return { canvas: cv, frames: 2, frameW: f0.width, frameH: f0.height };
 }
 
-/* ============================================================ E4a — viewmodels de arma
+/* ============================================================ E4a/E4b — viewmodels de arma
    (brazo + arma pixelados, perspectiva forzada Doom: cañón hacia arriba-izquierda).
    makeWeaponSprite(silhouette, accent): una SILUETA por familia de arma, todas con el
    MISMO lenguaje gráfico (grano 96×72, chapa #2b2f3a/#3a3f4c, guante #3a2f28 y un acento
    emisivo por arma que viene en `accent`). Cada silueta tiene su boca de disparo
    (frame `muzzle` en celdas lógicas) → game.js ancla ahí el fogonazo del viewmodel, así
-   el destello sale del cañón correcto en las 6 familias (y en las de E4b: 'twin',
-   'rail' y 'orb' para changó/riel/compilador).
+   el destello sale del cañón correcto en las 10 familias (las 6 de E4a + las 4 de E4b:
+   'plasma'/'mate', 'twin'/'chango', 'rail'/'riel' y 'orb'/'compilador').
    NB: rectPx/px reciben SIEMPRE el argumento `s` de escala (fix E3: omitirlo daba NaN
    en fillRect). Las siluetas se pintan 100% opacas: el material del viewmodel usa
    alphaTest 0.5 y la transparencia suave se recortaría a media. */
@@ -261,10 +280,75 @@ const SIL = {
     px(c, 29, 18, s, '#e0473a'); px(c, 29, 20, s, '#e0473a'); // aletas rojas
     rectPx(c, 70, 20, 4, 8, s, ac);               // franja de peligro trasera
   } },
-  // ---- E4b (llegan con changó/riel/compilador):
-  // twin:  dos bocas V una al lado de la otra (changó, doble cañón)
-  // rail:  riel largo con dos prongs emisivos y bobinas (riel del Colastiné)
-  // orb:   brazo + guante con orbe argent flotante encima de la palma (compilador)
+  // ---- E4b — las 4 que faltaban (changó/riel/compilador/mate), mismo lenguaje gráfico:
+  // twin: escopeta doble — dos bocas V gemelas hermanadas + bombe + guante doble
+  twin: { muzzle: [47, 14], draw(c, s, ac) {
+    gunHand(c, s);
+    rectPx(c, 40, 44, 16, 7, s, '#4a3324');               // bombe doble (madera, bajo las cañas)
+    rectPx(c, 40, 44, 16, 2, s, '#6b4c33');               // brillo de la madera
+    vBarrel(c, s, 38, 46, 12, 32, '#2b2f3a', '#12151d');  // caña izquierda
+    vBarrel(c, s, 48, 56, 12, 32, '#2b2f3a', '#12151d');  // caña derecha (espejada, gemela)
+    rectPx(c, 37, 11, 10, 3, s, '#3a3f4c');               // anillo boca izq
+    rectPx(c, 47, 11, 10, 3, s, '#3a3f4c');               // anillo boca der
+    rectPx(c, 39, 12, 6, 2, s, ac);                       // banda emisiva izq
+    rectPx(c, 49, 12, 6, 2, s, ac);                       // banda emisiva der
+    rectPx(c, 44, 17, 4, 13, s, '#12151d');               // junta central entre las dos cañas
+    rectPx(c, 58, 28, 26, 9, s, '#2b2f3a');               // lomo sobre el guante
+    rectPx(c, 38, 30, 40, 12, s, '#3a3f4c');              // cajera compartida
+    rectPx(c, 62, 15, 20, 6, s, '#2b2f3a');               // culata clavada al hombro
+    rectPx(c, 64, 17, 3, 2, s, ac);                       // chapa grabada
+    rectPx(c, 60, 10, 12, 6, s, '#3a2f28');               // segundo guante arriba (cañón alto)
+    rectPx(c, 60, 10, 12, 2, s, '#5a4a3e');               // dorso del guante alto
+    px(c, 41, 13, s, '#fff'); px(c, 51, 13, s, '#fff');    // chispas en los anillos
+  } },
+  // plasma: riel de células estilo Doom — aro de energía con célula adentro, emisor arriba
+  plasma: { muzzle: [40, 9], draw(c, s, ac) {
+    gunHand(c, s);
+    rectPx(c, 46, 12, 22, 36, s, '#2b2f3a');      // cuerpo hacia el guante
+    rectPx(c, 46, 12, 22, 3, s, '#3a3f4c');       // tapa superior
+    rectPx(c, 50, 16, 14, 3, s, ac);              // emisor de la boca
+    rectPx(c, 62, 30, 8, 10, s, '#141a24');       // mirilla lateral
+    rectPx(c, 64, 32, 4, 6, s, ac);               // célula visible en la mirilla
+    ellipseOutline(c, 53, 34, 5, 5, s, ac);       // aro de energía (borde del óvalo)
+    ellipseFill(c, 53, 34, 2, 2, s, ac);          // célula cian cargada en el centro
+    rectPx(c, 52, 33, 2, 2, s, '#e8ffff');        // brillo de la célula
+    rectPx(c, 42, 30, 4, 10, s, '#141a24');       // ranura del aro (conecta a la boca)
+    rectPx(c, 43, 32, 2, 6, s, ac);               // hilo de energía ranura→aro
+  } },
+  // rail: riel largo con dos prongs emisivos que abrazan la boca + bobinas (Colastiné)
+  rail: { muzzle: [30, 5], draw(c, s, ac) {
+    gunHand(c, s);
+    rectPx(c, 28, 22, 54, 12, s, '#2b2f3a');      // viga larga del riel
+    rectPx(c, 28, 22, 54, 2, s, '#3a3f4c');       // brillo de la viga
+    rectPx(c, 28, 32, 54, 2, s, '#12151d');       // sombra de la viga
+    rectPx(c, 30, 5, 5, 14, s, '#3a3f4c');        // prong emisivo izquierdo
+    rectPx(c, 41, 5, 5, 14, s, '#3a3f4c');        // prong emisivo derecho
+    rectPx(c, 31, 5, 3, 8, s, ac);                // carga del prong izq
+    rectPx(c, 42, 5, 3, 8, s, ac);                // carga del prong der
+    rectPx(c, 30, 5, 5, 2, s, '#fff');            // chispa alta izq
+    rectPx(c, 41, 5, 5, 2, s, '#fff');            // chispa alta der
+    rectPx(c, 36, 10, 4, 6, s, '#12151d');        // boca entre los prongs
+    rectPx(c, 36, 16, 4, 6, s, ac);               // descarga hacia la viga
+    rectPx(c, 50, 26, 4, 6, s, ac);               // bobina 1
+    rectPx(c, 58, 26, 4, 6, s, ac);               // bobina 2
+    rectPx(c, 66, 26, 4, 6, s, ac);               // bobina 3
+    rectPx(c, 60, 36, 14, 12, s, '#3a3f4c');      // cajera sobre el guante
+  } },
+  // orb: brazo extendido con el orbe argent flotando sobre la palma (el Compilador no se
+  // "sostiene": se manda — el cañón es la mano del MORIS)
+  orb: { muzzle: [44, 31], draw(c, s, ac) {
+    gunHand(c, s);
+    rectPx(c, 30, 48, 26, 8, s, '#3a2f28');       // antebrazo extendido (hacia la palma)
+    rectPx(c, 30, 48, 26, 2, s, '#5a4a3e');       // dorso del antebrazo
+    rectPx(c, 24, 44, 14, 10, s, '#4a3b31');      // palma abierta bajo el orbe
+    rectPx(c, 24, 44, 14, 2, s, '#5f4d40');       // nudillos de la palma
+    ellipsePx(c, 32, 37, 4, 1, s, '#141a24');     // sombra proyectada del orbe sobre la mano
+    ellipseFill(c, 31, 36, 5, 5, s, '#1f4d1c');   // orbe verde: argolla externa oscura
+    ellipseFill(c, 31, 36, 3, 3, s, ac);          // núcleo verde emisivo
+    px(c, 30, 35, s, '#f0ffe8'); px(c, 31, 34, s, '#f0ffe8'); // brillo especular
+    rectPx(c, 50, 44, 12, 6, s, '#2b2f3a');       // guante de soporte (la otra mano)
+    rectPx(c, 52, 45, 8, 2, s, ac);               // deditos con acento
+  } },
 };
 
 // silueta → canvas del viewmodel. accent = color emisivo del arma (ver WEAPONS en game.js).

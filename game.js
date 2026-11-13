@@ -3,6 +3,9 @@
 // munición por tipo con caps, pickups billboard y drops por kill (ver PICKUPS/AMMO).
 // E4a: sistema de armas multipool — tabla WEAPONS declarativa, 6 armas (0-5) con viewmodel
 // pixelado propio en escena separada, cambio con teclas/rueda/mando/touch (ver WEAPONS).
+// E4b: arsenal completo (10/10) — Mate/plasma, Changó/doble (twin), Riel/perforante con
+// carga de gatillo y Compilador/orbe BFG (scorched + screen shake) + pickup de arma
+// (spawnWeaponPickup, listo para E5) + puerta trasera ?weapons=all (ver WEAPONS).
 import * as THREE from 'three';
 import { EffectComposer } from './vendor/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from './vendor/examples/jsm/postprocessing/RenderPass.js';
@@ -84,6 +87,21 @@ const Sfx = {
   rocketFire()  { this.noise(0.3, 0.4, 900, 0.6); this.tone('sine', 700, 140, 0.28, 0.35); },     // whoosh
   explosion()   { this.noise(0.45, 0.7, 180, 0.4); this.tone('sawtooth', 110, 28, 0.4, 0.5);
                   this.noise(0.15, 0.4, 600, 0.6); },                               // boom
+  // E4b — sonidos propios de los slots 6-9. railCharge dura lo mismo que W.chargeT: la
+  // barra que se ve en el crosshair (#railring) es la misma barra AUDIBLE; sueltas antes
+  // de la subida y no hay crack. shootTwin se dispara una vez POR CAÑÓN: el "doble boom"
+  // del changó sale del burst real de dos escopetazos a 0.25 s.
+  shootPlasma() { this.tone('sine', 1250, 260, 0.09, 0.28); this.noise(0.03, 0.12, 2600, 2); }, // bleep "pew"
+  shootTwin()   { this.noise(0.18, 0.6, 430, 0.5); this.tone('sawtooth', 88, 30, 0.2, 0.48); }, // boom corto por cañón
+  railCharge()  { this.tone('sawtooth', 90, 820, 0.35, 0.18);
+                  this.noise(0.35, 0.1, 1200, 1.5); },                              // turbina que sube
+  railFire()    { this.noise(0.12, 0.7, 3400, 1.8); this.tone('sawtooth', 1600, 70, 0.22, 0.5);
+                  this.noise(0.25, 0.35, 500, 0.7); },                              // crack eléctrico
+  bfgFire()     { this.noise(0.35, 0.22, 240, 0.5); this.tone('sine', 180, 40, 0.3, 0.14); }, // exhalación de humo
+  bfgBoom()     { this.noise(0.8, 0.7, 110, 0.35); this.tone('sawtooth', 70, 16, 0.85, 0.55);
+                  this.tone('sine', 44, 14, 0.95, 0.5); },                          // detonación grave
+  weaponGet()   { [523, 659, 784, 1046].forEach((f, i) =>                           // OBTENIDA: fanfarria
+                  setTimeout(() => this.tone('triangle', f, f, 0.12, 0.2), i * 70)); },
   hitmark(){ this.tone('square', 950, 700, 0.05, 0.12); },
   kill()   { this.tone('sawtooth', 520, 90, 0.28, 0.22); this.noise(0.15, 0.2, 800, 0.6); },
   hurt()   { this.tone('sine', 160, 50, 0.3, 0.35); this.noise(0.1, 0.25, 300, 0.7); },
@@ -307,6 +325,7 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   vmCam.aspect = innerWidth / innerHeight; // E4a: la cámara del viewmodel también
   vmCam.updateProjectionMatrix();
+  vmFit(); // E4b: el ancla abajo-derecha se re-deriva con el aspect nuevo
   const pr = maxDpr(); // mismo cap de dpr para renderer y composer (modo normal)
   renderer.setPixelRatio(pr);
   renderer.setSize(innerWidth, innerHeight);
@@ -599,48 +618,83 @@ const AMMO = {
   cohetes:   { cap: 12,  label: 'COHETES' },
   argents:   { cap: 20,  label: 'ARGENTS' },
 };
-/* ============================================================ E4a — tabla de armas
+/* ============================================================ E4a/E4b — tabla de armas (10/10)
    UNA FILA POR ARMA = spec de balance (DESIGN_ARSENAL.md). Tipos de disparo:
      melee      → ray corto sin mag ni pool, empujón (fists SIEMPRE andá: fallback Doom)
      hitscan    → un rayo con W.dmg (refactor del rifle de siempre: el id "rifle" ES la
                   vecinal — alias interno para no romper HUD/pools/mags de E3)
      shotgun    → W.pellets hitscan con dirección rotada en cono W.spread (cono TOTAL)
+     twin       → escopeta doble (changó): UN clic dispara W.bullets cañones. El primero
+                  consume W.ammoCost cartuchos DEL POOL y dispara; el segundo sale a los
+                  W.burst s SOLO si queda pool (consumo sobre la marcha: el último cartucho
+                  no se hipoteca). magSize 0 = sin cargador, el pool va directo a la vista
      flow       → dispara ticks de W.tick mientras firing y pool>0, consumiendo
                   W.flowRate células/s DEL POOL (sin cargador, sin tryReload)
-     projectile → cohete con pooling (W.projVel m/s, explota en contacto/suelo/caja/muro,
-                  splash W.dmg decaído linealmente en W.splash; auto-daño al jugador <3 m)
-   Campos: slot (tecla 1..0 = slot 0..9), cross (clase del crosshair DOM, por arma),
-   ammo (pool o null=infinito), magSize (0 = sin cargador), dmg/cad (segundos entre disparos), pellets/spread (shotgun), projVel/splash
-   (cohete), heatMax (ráfagas seguidas antes del bloqueo), kick (retroceso del viewmodel,
-   m) / recoil (patada de cámara, rad), sfx (método de Sfx del disparo), silhouette y
-   accent para el viewmodel pixelado (sprites.js:makeWeaponSprite). */
+     projectile → proyectil con pooling (W.projVel m/s, sale bajo los ojos). Con splash>0
+                  es el cohete de Kira: bola de fuego con decaimiento lineal y auto-daño
+                  al jugador <3 m. Con splash:0 es la célula de Mate: W.dmg DIRECTO al
+                  enemigo que toca y pop contra muro/caja/suelo (sin área). Con orb:true
+                  es el orbe del Compilador (pool propio): detona al impactar enemigo o
+                  geometría, o a los W.life s → BFG_DMG a TODO enemigo a <BFG_RADIUS m,
+                  screen shake y enemigos "scorched" (ver updateOrbs/bfgBlast)
+     rail       → gatillo de carga (riel): mantener W.chargeT s el gatillo (el anillo DOM
+                  #railring del crosshair se llena) y AL SOLTAR sale un hitscan PERFORANTE
+                  de W.dmg a TODOS los enemigos del rayo (lista completa de
+                  intersectObjects, cortada por la primera pared). Consume W.ammoCost (5)
+                  células al soltar: si el pool no llega, no carga (click seco + hint).
+                  W.cad = cooldown DESPUÉS del disparo. El riel no quema ni scorcha
+   Campos: slot (teclas 1..0 = slot 0..9), cross (clase del crosshair DOM, por arma),
+   shortName (abreviatura limpia de la slot bar — ≤4 letras, nada de "VECI" a medias),
+   ammo (pool o null=infinito), magSize (0 = sin cargador: flow/twin/rail/orbe consumen el
+   pool directo), dmg/cad (segundos entre disparos), pellets/spread (shotgun y twin),
+   bullets/burst/ammoCost (twin; ammoCost también riel), chargeT (rail), projVel/splash/
+   life/orb (proyectil), heatMax (ráfagas seguidas antes del bloqueo), kick (retroceso del
+   viewmodel, m) / recoil (patada de cámara, rad), sfx (método de Sfx del disparo),
+   silhouette y accent para el viewmodel pixelado (sprites.js:makeWeaponSprite). */
 const WEAPONS = {
-  fists:  { slot: 0, name: 'PUÑOS',          hud: 'PUÑO', cross: 'melee',   ammo: null,      magSize: 0,  dmg: 30, cad: 0.5,
+  fists:  { slot: 0, name: 'PUÑOS',          shortName: 'PUÑO', cross: 'melee',   ammo: null,      magSize: 0,  dmg: 30, cad: 0.5,
             type: 'melee',      range: 2.4, knock: 1.15, kick: 0.10, recoil: 0.006, sfx: 'shootFist',
             silhouette: 'fists' },
-  rifle:  { slot: 1, name: 'VECINAL',        hud: 'VECI', cross: 'pistol',  ammo: 'balas',   magSize: 30, dmg: 22, cad: 0.22,
+  rifle:  { slot: 1, name: 'VECINAL',        shortName: 'VEC',  cross: 'pistol',  ammo: 'balas',   magSize: 30, dmg: 22, cad: 0.22,
             type: 'hitscan',    spread: 0.006, kick: 0.05, recoil: 0.012, sfx: 'shootVecinal',
             silhouette: 'pistol',  accent: '#54f0ff' },
-  moris12:{ slot: 2, name: 'MORIS-12',       hud: 'M12',  cross: 'shotgun', ammo: 'cartuchos', magSize: 6, dmg: 8, cad: 0.85, pellets: 8,
+  moris12:{ slot: 2, name: 'MORIS-12',       shortName: 'M12',  cross: 'shotgun', ammo: 'cartuchos', magSize: 6, dmg: 8, cad: 0.85, pellets: 8,
             type: 'shotgun',    spread: 0.157 /* cono total ~9° */, kick: 0.11, recoil: 0.045, sfx: 'shootShotgun',
             silhouette: 'shotgun', accent: '#ffb057' },
-  ametralladora: { slot: 3, name: 'AMETRALLADORA', hud: 'AMET', cross: 'smg', ammo: 'balas', magSize: 60, dmg: 15, cad: 0.09,
+  ametralladora: { slot: 3, name: 'AMETRALLADORA', shortName: 'AMET', cross: 'smg', ammo: 'balas', magSize: 60, dmg: 15, cad: 0.09,
             type: 'hitscan',    spread: 0.016, heatSpread: 0.014, heatMax: 40, /* 40 seguidas → bloqueo 1.2 s */
             kick: 0.035, recoil: 0.008, sfx: 'shootSmg',
             silhouette: 'smg',   accent: '#b6ff5e' },
-  asador: { slot: 4, name: 'ASADOR',         hud: 'ASAN', cross: 'flamer',  ammo: 'celulas', magSize: 0,  dmg: 9,  cad: 0,
+  asador: { slot: 4, name: 'ASADOR',         shortName: 'ASAN', cross: 'flamer',  ammo: 'celulas', magSize: 0,  dmg: 9,  cad: 0,
             type: 'flow',       tick: 0.1, flowRate: 2, cone: 0.349 /* ±10° (20° total) */, range: 7,
             burnT: 4, burnDps: 2.25, kick: 0.02, recoil: 0, sfx: 'flame',
             silhouette: 'flamer', accent: '#ff5e3a' },
-  kira:   { slot: 5, name: 'KIRA',           hud: 'KIRA', cross: 'rocket',  ammo: 'cohetes', magSize: 4,  dmg: 95, cad: 1.1,
+  kira:   { slot: 5, name: 'KIRA',           shortName: 'KIRA', cross: 'rocket',  ammo: 'cohetes', magSize: 4,  dmg: 95, cad: 1.1,
             type: 'projectile', projVel: 20, splash: 3, spread: 0.01, kick: 0.12, recoil: 0.05, sfx: 'rocketFire',
             silhouette: 'rocket', accent: '#ff2d55' },
-  // ---- E4b (slots 6-9, filas que faltan; DESIGN_ARSENAL.md):
-  // chango:     slot 6, cartuchos, 14×10 pellets, 1.2 s (o doble disparo 0.25)  → silhouette 'twin'
-  // mate:       slot 7 — OJO: el plasma quiere 'celulas', el MISMO pool del asador:
-  //             E4b decide si le da pool propio antes de enchufarlo (riesgo documentado)
-  // riel:       slot 8, 160 perforante, carga 0.35 s, celdas especiales          → silhouette 'rail'
-  // compilador: slot 9, argents, 300 onda, 2.0 s                                 → silhouette 'orb'
+  // ---- E4b (slots 6-9; siluetas 'plasma'/'twin'/'rail'/'orb' en sprites.js). OJOS E5:
+  //  · MATE y ASADOR comiven el pool 'celulas' (decisión E4b, el riesgo que E4a anotó:
+  //    pool compartido como la energía del plasma Doom — el riel cobra 5 células de ahí).
+  //    La goma son los drops ammoCelulas y las cajas de arena (spawnWavePickups n≥4).
+  //  · CHANGÓ comparte 'cartuchos' con MORIS-12 (dos escopetas, un solo lenguaje Doom).
+  //  · COMPILADOR: 10 argents por orbe y cap 20 → el arma vive "a dos orbes"; la caja
+  //    ammoArgents (+2) es escasa a propósito y el drop normal NO suelta argents.
+  mate:   { slot: 6, name: 'MATE',           shortName: 'PLAS', cross: 'plasma',  ammo: 'celulas', magSize: 40, dmg: 30, cad: 0.16,
+            type: 'projectile', projVel: 28, splash: 0 /* daño directo en el impacto, sin splash */, spread: 0.008,
+            kick: 0.04, recoil: 0.008, sfx: 'shootPlasma',
+            silhouette: 'plasma', accent: '#5ee6ff' },
+  chango: { slot: 7, name: 'CHANGÓ',         shortName: 'DBLE', cross: 'twin',    ammo: 'cartuchos', magSize: 0 /* dos cañones al pool: sin recarga */, dmg: 10, cad: 1.2, pellets: 14,
+            type: 'twin',       bullets: 2, ammoCost: 1, burst: 0.25, spread: 0.157 /* mismo cono del MORIS-12: la furia va en 14×10 */,
+            kick: 0.13, recoil: 0.05, sfx: 'shootTwin',
+            silhouette: 'twin',  accent: '#ffb057' },
+  riel:   { slot: 8, name: 'RIEL',           shortName: 'RIEL', cross: 'rail',    ammo: 'celulas', magSize: 0 /* 5 células por disparo, directo al pool */, dmg: 160, cad: 1.4,
+            type: 'rail',       chargeT: 0.35, ammoCost: 5,
+            kick: 0.09, recoil: 0.03, sfx: 'railFire',
+            silhouette: 'rail',  accent: '#b6ff5e' },
+  compilador: { slot: 9, name: 'COMPILADOR', shortName: 'BFG',  cross: 'bfg',     ammo: 'argents', magSize: 0 /* 10 argents por orbe: el pool manda */, dmg: 300, cad: 2.0,
+            type: 'projectile', orb: true, projVel: 12, life: 3 /* orbe: 12 m/s, detona al impactar o a los 3 s */,
+            kick: 0.10, recoil: 0.04, sfx: 'bfgFire',
+            silhouette: 'orb',   accent: '#6dff5e' },
 };
 // slot → id (teclas 1..0 = slot 0..9). A E4b le basta agregar filas arriba: esto se solo.
 const SLOT = Array(10).fill(null);
@@ -664,16 +718,28 @@ const PICKUPS = {
 // estado inicial de recursos por partida/retry (hp100/armor0/120 balas vive acá).
 // E4a: owned arranca fists+vecinal (id interno "rifle"); el mag solo se crea para las
 // owned con cargador (las flow como el asador se crean al desbloquearse, vacías: E5
-// las llena con el pickup de arma). El pickup de arma de E5 llama unlockWeapon(id).
+// las llena con el pickup de arma). El pickup de arma (spawnWeaponPickup, E4b) llama
+// unlockWeapon(id) y suma START_AMMO del pool.
 const START_OWNED = ['fists', 'rifle']; // arranque fijo (E5 mueve el desbloqueo al pickup)
+// E4b — puerta trasera de QA: ?weapons=all arranca con el arsenal completo + ammo inicial
+// por pool para testear los 10 slots HOY. No reemplaza a E5: solo siembra startResources;
+// los pickups de arma del piso siguen usando START_AMMO al pisarse.
+const ALL_WEAPONS = new URLSearchParams(location.search).get('weapons') === 'all';
+// Munición que trae un pickup de arma al pisarse (spec E4b: cartuchos 24, células 40,
+// argents 10). balas/cohetes las completa E4b para que ningún pickup llegue pelado a E5.
+const START_AMMO = { balas: 40, cartuchos: 24, celulas: 40, cohetes: 3, argents: 10 };
 const startResources = () => ({
   hp: 100, armor: 0,
-  owned: new Set(START_OWNED),
-  mags: Object.fromEntries(START_OWNED
+  owned: new Set(ALL_WEAPONS ? Object.keys(WEAPONS) : START_OWNED),
+  mags: Object.fromEntries((ALL_WEAPONS ? Object.keys(WEAPONS) : START_OWNED)
     .filter(id => WEAPONS[id].magSize > 0)
     .map(id => [id, WEAPONS[id].magSize])),
   weaponId: 'rifle',
-  pools: { balas: { n: 120 }, cartuchos: { n: 0 }, celulas: { n: 0 }, cohetes: { n: 0 }, argents: { n: 0 } },
+  pools: { balas: { n: 120 + (ALL_WEAPONS ? START_AMMO.balas : 0) },
+           cartuchos: { n: ALL_WEAPONS ? START_AMMO.cartuchos : 0 },
+           celulas: { n: ALL_WEAPONS ? START_AMMO.celulas : 0 },
+           cohetes: { n: ALL_WEAPONS ? START_AMMO.cohetes : 0 },
+           argents: { n: ALL_WEAPONS ? START_AMMO.argents : 0 } },
 });
 
 /* ============================================================ player */
@@ -691,6 +757,9 @@ const player = {
   fireCd: 0, heat: 0,       // heat: SOLO armas con W.heatMax (ametralladora) — ya no es del rifle
   cooling: 0,               // E4a: bloqueo por sobrecalentamiento (HUD "CALOR")
   vmKick: 0,                // E4a: kick del viewmodel (decae en 0.12 s)
+  chargeT: 0,               // E4b riel: segundos de carga del gatillo (0 = nada en curso)
+  twinNext: 0, twinT: 0,    // E4b changó: cañones que faltan del doble + temporizador
+  shakeT: 0,                // E4b compilador: screen shake restante (roll/offset de cámara)
   lastShotT: -9,            // E4a: para el enfriamiento de heat ("ráfagas SEGUIDAS")
   reloading: 0, dryT: 0,    // reloading: temporizador de recarga · dryT: anti-spam click vacío
   jumpQueued: false,             // tap JUMP táctil (el espacio de desktop sigue usando keys)
@@ -720,7 +789,10 @@ let viewYaw = 0, viewPitch = 0;
      siguen colgando de un ancla invisible bajo la cámara. */
 const vmScene = new THREE.Scene();
 const vmCam = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 10);
-const VM = { root: new THREE.Group(), baseX: 0.16, baseY: -0.15, baseZ: -0.34, mesh: null };
+// QA E4b (polish 4a): baseX/baseY ya no son mágicos fijos — vmFit() los deriva del aspect
+// real de vmCam (se llama al arrancar y en cada resize). Los valores acá son solo el
+// punto de partida del primer frame (16:9).
+const VM = { root: new THREE.Group(), baseX: 0.164, baseY: -0.056, baseZ: -0.34, mesh: null };
 vmScene.add(VM.root);
 
 // fogonazo del viewmodel: quad ADITIVO que vive 1 frame por disparo (flashT). Se
@@ -768,7 +840,17 @@ applyGunGlow(); // estado inicial acorde al bloom (on por default)
 
 // un viewmodel por arma: texture Nearest (crunch) + quad con alphaTest 0.5 (el arte es
 // 100% opaco → bordes duros sin halo) + boca de fogonazo en celdas lógicas de la silueta
-const VM_VH = 0.34; // alto del viewmodel en unidades de vmCam
+// QA E4b (polish 4a): 12% más chico (0.34 → 0.30). Con el alto viejo el sprite ocupaba
+// ~87% del alto de vmCam y el baseY fijo lo colgaba del centro: a 270p se veía "centrado
+// y cortado abajo". vmFit() ancla el cuadro abajo-derecha según el aspect de vmCam.
+const VM_VH = 0.30; // alto del viewmodel en unidades de vmCam
+function vmFit() { // se llama al arrancar y en resize (vmCam.updateProjectionMatrix dixit)
+  const halfH = Math.tan(THREE.MathUtils.degToRad(vmCam.fov / 2)) * Math.abs(VM.baseZ);
+  const vw = VM_VH * 96 / 72; // todas las siluetas comparten la grilla lógica 96×72
+  VM.baseY = -(halfH - VM_VH / 2) - 0.010; // sentado al borde inferior (sangrado ~3%: roza, no se corta)
+  VM.baseX = Math.max(0.08, halfH * vmCam.aspect - vw / 2 + 0.015); // idem contra el borde derecho
+}
+vmFit();
 const VM_MODELS = {};
 function vmModel(id) {
   if (!VM_MODELS[id]) {
@@ -822,6 +904,13 @@ function updateViewmodel(dt, moving) {
 // clear=false: RenderPass pone renderer.autoClear=false por dentro y pinta sin limpiar.
 // clearDepth=true: renderer.clearDepth() antes → el depth del mundo se borra y el
 // viewmodel NUNCA es tapado por geometría (riesgo conocido del E2, resuelto acá).
+// VERIFICADO E4b (riesgo anotado en E4a): el toggle T hace composer.reset(nuevoTarget),
+// y en r160 reset() SOLO re-asigna renderTarget1/2 y read/writeBuffer — la lista `passes`
+// no se toca, así que vmPass (insertPass index 1) sobrevive el swap de targets; resize
+// re-sizea todos los passes por igual. Además RenderPass.render restituye autoClear al
+// salir (fuente en vendor/) → el RenderPass de la escena sigue limpiando el RT cada frame
+// y no hay acumulación. Si algo de esto se rompe en una upgrade de three: la arena deja
+// de limpiar y el viewmodel desaparece al tocar T — dos síntomas imposibles de pasar por alto.
 const vmPass = new RenderPass(vmScene, vmCam);
 vmPass.clear = false;
 vmPass.clearDepth = true;
@@ -959,13 +1048,17 @@ const enemyHitboxes = []; // mallas invisibles para raycast
 
 // E4a — tinte por ESTADO del sprite (riesgo documentado de "pisarse tintes" del E2):
 // el color del material ya lo usa el flash blanco HDR; la solución es UN solo punto de
-// control: `tintBase` (blanco normal / naranja quemado) y `tintCur` (escalar del flash).
-// El color final es tintCur mezclado HACIA tintBase por frame (lerp):
-//   flash()  → tintCur=2.2 blanco (pisa el tinte un instante, como siempre)
-//   update() → decae a 1 sobre tintBase: quemado = flash blanco → naranja → naranja
-// Así nunca dos dueños escriben `material.color` peleando (el único escritor es update).
+// control: el estado (burn > scorch > normal) y el flash. El color final decae por frame
+// (lerp) HACIA el tinte del estado vigente:
+//   flash()  → color=2.2 blanco (pisa el tinte un instante, como siempre)
+//   update() → decae al tinte del estado: quemado = flash blanco → naranja → naranja
+// E4b sumaron un estado más (scorched del compilador) y sigue habiendo UN solo escritor
+// de `material.color`: el lerp de update(), que elige TINT_* por prioridad de timers.
 const TINT_NORMAL = new THREE.Color(1, 1, 1);
 const TINT_BURN   = new THREE.Color(1.5, 0.55, 0.22); // naranja HDR: el bloom lo hace lucir
+const TINT_SCORCH = new THREE.Color(0.40, 0.36, 0.42); // E4b "scorched" (compilador): tinte
+// oscuro SUB-1 — el sprite se apaga y el bloom lo suelta. A diferencia del quemado no
+// hace DoT y el fuego manda: update() elige el tinte por prioridad burn > scorch > normal.
 
 // hitbox caja compartida (raycast): invisibles y DoubleSide para que el disparo las
 // agarre desde cualquier ángulo, igual que antes de los sprites.
@@ -1005,7 +1098,7 @@ class Enemy {
     this.lastScr = null; // E8-polish(a): última posición en pantalla con el enemigo visible
     this.burnT = 0;      // E4a: segundos de estado QUEMADO (asador); DoT fraccional
     this.burnDps = 0;    // 2.25 lo fija la fila WEAPONS.asador en burn() (única fuente)
-    this.tintBase = TINT_NORMAL;
+    this.scorchT = 0;    // E4b: segundos de tinte oscuro por detonación del compilador
 
     const A = enemySprite(type);
     this.tex = A.tex.clone();
@@ -1032,15 +1125,18 @@ class Enemy {
     burst(pos, T.color, 14, 5, 0.8);
   }
   // flash de daño: tinte blanco SUPERRADIANTE (Basic multiplica el map con color >1 →
-  // sprite blanco HDR); en update() decae HACIA tintBase (blanco o naranja quemado).
+  // sprite blanco HDR); en update() decae HACIA el tinte del estado (blanco / quemado /
+  // scorched).
   flash() { this.spr.material.color.setScalar(2.2); }
   // E4a — estado quemado (asador): renueva/extends el tinte naranja + DoT burnDps.
   burn(sec, dps) {
     if (this.burnT <= 0) burst(this.g.position, 0xff7f2f, 5, 3.5, 0.6, 1.7); // primera ignición
     this.burnT = Math.max(this.burnT, sec);
     this.burnDps = dps;
-    this.tintBase = TINT_BURN;
   }
+  // E4b — estado scorched (detonación del compilador): tinte oscuro persistente SIN DoT.
+  // El riel, a propósito, no deja marca: solo el orbe verde fríe el piso.
+  scorch(sec) { this.scorchT = Math.max(this.scorchT, sec); }
   takeDamage(d, point) {
     this.hp -= d;
     this.flash();
@@ -1096,11 +1192,15 @@ class Enemy {
       this.burnT -= dt;
       this.hp -= this.burnDps * dt;
       if (this.hp <= 0) { this.die(); return; }
-      if (this.burnT <= 0) this.tintBase = TINT_NORMAL;
     }
-    // tinte: el flash (setScalar 2.2 en flash()) decae HACIA tintBase; en estado normal
-    // tintBase es blanco y esto es idéntico al viejo "decay to 1" del E2.
-    this.spr.material.color.lerp(this.tintBase, Math.min(1, dt * 5));
+    if (this.scorchT > 0) this.scorchT -= dt; // E4b: el tinte oscuro del compilador se apaga solo
+    // tinte: el flash (setScalar 2.2 en flash()) decae HACIA el tinte de estado vigente
+    // (E4b: prioridad burn > scorch > normal — un quemado-scorcheado sale naranja mientras
+    // hierve y queda oscuro al apagarse el fuego). Sin burn ni scorch esto es idéntico al
+    // "decay to 1" del E2: el único escritor del color sigue siendo este lerp.
+    this.spr.material.color.lerp(
+      this.burnT > 0 ? TINT_BURN : this.scorchT > 0 ? TINT_SCORCH : TINT_NORMAL,
+      Math.min(1, dt * 5));
 
     const p = this.g.position;
     _eDir.set(player.pos.x - p.x, 0, player.pos.z - p.z);
@@ -1191,6 +1291,37 @@ function clearPickups() {
   pickups.length = 0;
 }
 
+/* ---- E4b — PICKUP DE ARMA (la entrada que E5 coloca por nivel) ---------------------
+   Sin sprite nuevo, como pidió el pedido: el cuadro es makeWeaponSprite — el MISMO arte
+   del viewmodel, "reducido" a escala de pickup (0.8 m de alto) en game.js. Viaja en el
+   pool `pickups` con campo `weapon` (kind = null): el update de pickups lo hace girar e
+   izar MÁS ALTO que las cajas (0.95 m, respiración lenta) y el collect tiene su rama.
+   Pisarlo = unlockWeapon(id) (es tuya para siempre) + START_AMMO del pool + toast grande
+   "OBTENIDA: X" + fanfarria. Si el arma ya era tuya, degrada a caja de su munición.
+   Las oleadas NO la spawnan (E5 la coloca con script); ?weapons=all cubre el QA de hoy. */
+const WPNPICK_ART = {};
+function spawnWeaponPickup(weaponId, pos) {
+  const W = WEAPONS[weaponId];
+  if (!W || !W.ammo) return; // fists no se pickupéa (no tiene pool ni silueta con acento)
+  if (!WPNPICK_ART[weaponId]) {
+    const art = makeWeaponSprite(W.silhouette || 'pistol', W.accent || '#54f0ff', 2);
+    const tex = new THREE.CanvasTexture(art.canvas);
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false; tex.colorSpace = THREE.SRGBColorSpace;
+    const h = 0.8; // escala 0.8: más grande que una caja (0.6), legible de lejos
+    WPNPICK_ART[weaponId] = { tex, geo: new THREE.PlaneGeometry(h * art.canvas.width / art.canvas.height, h) };
+  }
+  const A = WPNPICK_ART[weaponId];
+  const tex = A.tex.clone(); // source compartido, como los billboards de enemigo/pickup
+  const mesh = new THREE.Mesh(A.geo, new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, alphaTest: 0.5, depthWrite: true, side: THREE.DoubleSide }));
+  const baseY = 0.95; // levitación ALTA: el arma flota por encima de las cajas del piso
+  mesh.position.set(pos.x, baseY, pos.z);
+  scene.add(mesh);
+  pickups.push({ kind: null, weapon: weaponId, mesh, tex, baseY, drop: false, ttl: 0,
+                 born: game.time, t: rand(0, 6), phase: rand(0, 6.28), view: -1 });
+}
+
 // (a) spawn de oleada: cajas repartidas por la arena (spec E3).
 function spawnWavePickups(n) {
   const list = ['ammoBalas', 'ammoBalas', 'ammoBalas', 'medkit']; // base toda oleada
@@ -1215,12 +1346,17 @@ function pickupPoint() {
   return new THREE.Vector3(rand(-ARENA + 4, ARENA - 4), 0, rand(-ARENA + 4, ARENA - 4));
 }
 
-// (b) drops por kill (spec E3 / DESIGN_ARSENAL): 35% nada · 40% pool al gasto (simple:
-// 70% balas / 20% células / 10% cartuchos — E4 re-pondera por arma realmente usada) ·
+// (b) drops por kill (spec E3 / DESIGN_ARSENAL): 35% nada · 40% pool al gasto ·
 // 15% botiquín chico +10 · 10% shard de armadura. BRUTE garantiza y alterna cada 2.
+// E4b rebalance (DESIGN_ARSENAL): el 40% de munición reparte balas 50 / cartuchos 20 /
+// células 20 y le cede un 10% a la botiquín chico — así cartuchos (changó/MORIS-12) y
+// células (asador/mate/riel) son alcanzables SIN el debug ?weapons=all: E5 puede colocar
+// armas desde el nivel 1 y la economía de drops ya tiene de dónde responder.
 function rollKillDrop(pos, type) {
   let kind;
   if (type === 'brute') {
+    // BRUTE garantiza y alterna cada 2: crate de BALAS (se mantiene simple, como pide el
+    // pedido — no "el pool del arma más usada") o casco de armadura.
     bruteKills++;
     kind = (bruteKills + 1) % 4 < 2 ? 'ammoGrande' : 'armorHelm'; // 1-2 ammo · 3-4 armor…
   } else {
@@ -1228,7 +1364,7 @@ function rollKillDrop(pos, type) {
     if (r < 0.35) return;
     if (r < 0.75) {
       const a = Math.random();
-      kind = a < 0.7 ? 'ammoBalas' : a < 0.9 ? 'ammoCelulas' : 'ammoCartuchos';
+      kind = a < 0.50 ? 'ammoBalas' : a < 0.70 ? 'ammoCartuchos' : a < 0.90 ? 'ammoCelulas' : 'medkitSmall';
     } else if (r < 0.90) kind = 'medkitSmall';
     else kind = 'armorShard';
   }
@@ -1251,8 +1387,15 @@ function addAmmo(type, amount) {
   pool.n = Math.min(AMMO[type].cap, pool.n + amount);
   return pool.n - before; // lo que REALMENTE entró (el toast no muestra lo que el cap mordió)
 }
-// un pickup full no se levanta (queda en el piso para más tarde — evita gastar cajas)
-function pickupUsable(kind) {
+// un pickup full no se levanta (queda en el piso para más tarde — evita gastar cajas).
+// E4b: el pickup de ARMA (weaponId no null) se levanta si el arma falta, o si siendo
+// tuya al pool de su munición todavía le cabe algo (degrada a caja de ammo).
+function pickupUsable(kind, weaponId) {
+  if (weaponId) {
+    if (!player.owned.has(weaponId)) return true;
+    const poolId = WEAPONS[weaponId].ammo;
+    return !!poolId && player.pools[poolId].n < AMMO[poolId].cap;
+  }
   const d = PICKUPS[kind];
   if (d.cat === 'hp') return player.hp < player.maxHp;
   if (d.cat === 'armor') return player.armor < player.maxArmor;
@@ -1261,6 +1404,27 @@ function pickupUsable(kind) {
 const PICKUP_FX = { hp: 0x0ee6a0, armor: 0x4da3ff, ammo: 0xffd166 }; // color de partícula
 
 function collectPickup(p) {
+  if (p.weapon) {
+    // pickup de arma (E4b): para siempre + ammo inicial por pool + aviso grande. Con el
+    // arma ya en el bolsillo, el pickup sirve de caja de munición de su tipo.
+    const W = WEAPONS[p.weapon];
+    const fresh = unlockWeapon(p.weapon); // updateHud/updateTouchSwap + toast corto incl.
+    const gained = W.ammo ? addAmmo(W.ammo, START_AMMO[W.ammo] || 0) : 0;
+    if (fresh) {
+      toast(`OBTENIDA: ${W.name}`, 'weapon big'); // aviso grande (CSS .toast.big)
+      Sfx.weaponGet();
+      burst(p.mesh.position, 0x5ee6ff, 18, 6, 0.9, 1.9);
+    } else {
+      if (gained <= 0) return; // paranoia: pickupUsable ya filtra (pool full + owned)
+      Sfx.pickupAmmo();
+      toast(`+${gained} ${AMMO[W.ammo].label}`, 'ammo');
+      burst(p.mesh.position, PICKUP_FX.ammo, 10, 5, 0.7);
+    }
+    scene.remove(p.mesh); p.tex.dispose();
+    const wi = pickups.indexOf(p); if (wi >= 0) pickups.splice(wi, 1);
+    updateHud();
+    return;
+  }
   const d = PICKUPS[p.kind];
   let gained = 0, text = '', cls = '', sfx;
   if (d.cat === 'hp') {
@@ -1434,6 +1598,11 @@ function resetGame() {
   // bar y crosshair se reconstruyen (lastOwnedN=-1 fuerza rebuild en updateHud) y el
   // viewmodel salta a la vecinal.
   clearRockets();
+  clearCells();  // E4b: células de Mate fuera del aire
+  clearOrbs();   // E4b: orbes del compilador tampoco sobreviven a la partida
+  clearBeams();  // E4b: líneas del riel
+  cancelRailCharge();
+  player.twinNext = 0; player.twinT = 0; player.shakeT = 0; // E4b: promesas/pendientes a cero
   lastOwnedN = -1;
   applyCrosshair(player.weaponId);
   applyViewModel(player.weaponId);
@@ -1470,6 +1639,10 @@ function die() {
   game.state = 'dead';
   Sfx.death();
   clearRockets(); // E4a: cohetes en vuelo no sobreviven a la partida (no explotan en el menú)
+  clearCells();   // E4b: ídem células de Mate
+  clearOrbs();    // E4b: ídem orbes del compilador
+  clearBeams();   // E4b: update() congela su fade — la línea del riel se borra acá
+  cancelRailCharge(); // E4b: el anillo del riel no queda encendido sobre la pantalla de muerte
   document.exitPointerLock();
   dispatchEvent(new CustomEvent('gamestate', { detail: game.state })); // suelta input táctil
   if (game.score > best) { best = game.score; localStorage.setItem('moris-shooter-best', best); }
@@ -1540,6 +1713,10 @@ function switchWeapon(id) {
   player.weaponId = id;
   player.fireCd = Math.max(player.fireCd, 0.12);
   player.heat = 0; player.cooling = 0; player.vmKick = 0;
+  // E4b: trocar ABANDONA la carga del riel (no consume: el costo se cobra al soltar) y
+  // suelta el doble cañón pendiente del changó — ninguna promesa de disparo cruce de arma.
+  cancelRailCharge();
+  player.twinNext = 0; player.twinT = 0;
   if (player.reloading > 0) { player.reloading = 0; $('ammo').classList.remove('reloading'); }
   applyViewModel(id);                                    // viewmodel al instante
   applyCrosshair(id);                                    // crosshair al instante
@@ -1577,9 +1754,11 @@ function unlockWeapon(id, giveAmmo = 0) {
 // función con la implementación real (unlockWeapon la llama sin saber de modo).
 let updateTouchSwap = () => {};
 
-/* ---- slot bar (HUD): una ficha por arma owned con pool: "2 M12 34" (slot, nombre corto,
+/* ---- slot bar (HUD): una ficha por arma owned con pool: "2 M12 34" (slot, shortName,
    resto del pool). La activa resaltada. Se reconstruye solo cuando cambia owned; los
-   números se refrescan desde updateHud (barato: ≤10 fichas). */
+   números se refrescan desde updateHud (barato: ≤10 fichas). E4b (polish 4b): shortName
+   de 4 letras limpias por arma (VECI era un truncamiento feo de VECINAL) + margen derecho
+   de la barra en CSS (#slotbar margin-right). */
 let slotEls = [], lastOwnedN = -1;
 function updateSlotBar() {
   const ids = SLOT.filter(id => id && player.owned.has(id));
@@ -1592,7 +1771,7 @@ function updateSlotBar() {
       d.className = 'slot';
       d.dataset.id = id;
       const W = WEAPONS[id];
-      d.innerHTML = `<b>${W.slot + 1}</b> ${W.hud}<i></i>`;
+      d.innerHTML = `<b>${W.slot + 1}</b> ${W.shortName}<i></i>`;
       wrap.appendChild(d);
       return d;
     });
@@ -1646,6 +1825,7 @@ function enterPause() {
   if (game.state !== 'play') return;
   game.state = 'pause';
   toggleFiring(false);
+  cancelRailCharge(); // E4b: pausa con carga llena NO dispara al reanudar — la carga se pierde
   $('hud').classList.add('hidden');
   $('pause').classList.remove('hidden');
   dispatchEvent(new CustomEvent('gamestate', { detail: game.state }));
@@ -2002,9 +2182,12 @@ function tryReload() {
   if (game.state !== 'play' || player.reloading > 0) return;
   const W = curWeapon();
   if (!W.ammo || W.magSize <= 0) {
-    // fists (sin munición jamás): silencio total. Flow (asador) SIN pool: sí hay click
-    // vacío + hint — se quedó sin células y la única salida es el piso.
-    if (W.ammo && player.pools[W.ammo].n <= 0 && game.time >= player.dryT) {
+    // fists (sin munición jamás): silencio total. Las de pool directo sin cargador sí
+    // hacen click vacío + hint: el asador cuando NO le queda ninguna célula, y E4b extendió
+    // la regla al costo del disparo — el riel necesita 5 células (pool 4 = sin riel), el
+    // changó cobra 1 cartucho por cañón.
+    const need = W.ammoCost || 1;
+    if (W.ammo && player.pools[W.ammo].n < need && game.time >= player.dryT) {
       player.dryT = game.time + 0.5;
       Sfx.dry();
       showAmmoHint();
@@ -2031,7 +2214,9 @@ function tryReload() {
 let flashT = 0;
 function placeVmFlash(scaleMul) {
   const M = vmModel(player.weaponId);
-  vmFlash.position.set(M.muzzle[0], M.muzzle[1], -0.02);
+  // E4b: el quad vive en vmScene (no bajo VM.root) → el z del cañón es VM.baseZ, no -0.02
+  // (eso ponía el fogonazo contra el near plane, desincronizado de la boca del arma).
+  vmFlash.position.set(VM.baseX + M.muzzle[0], VM.baseY + M.muzzle[1], VM.baseZ - 0.02);
   vmFlash.scale.setScalar(M.flashS * scaleMul);
   vmFlash.material.rotation = rand(0, 6.28);
   vmFlash.visible = true;
@@ -2153,6 +2338,159 @@ function flamerTick(W) {
   if (any) hitmarkT = Math.max(hitmarkT, 0.08);
 }
 
+/* --- changó (E4b, type 'twin'): UNO de los dos cañones — 14 pellets que cobran 1 cartucho
+     DEL POOL (magSize 0: sin cargador, el pool va a la vista del HUD). El cañón 1 dispara
+     con el FX común de fireWeapon; el 2 lo agenda en player.twinT (update lo disparará a
+     los W.burst s con su propio eco de FX) y SOLO se dispara si al momento de salir queda
+     pool: el segundo cartucho nunca se hipoteca. --- */
+function fireTwinBarrel(W, first) {
+  const need = W.ammoCost || 1;
+  if (player.pools[W.ammo].n < need) {
+    if (game.time >= player.dryT) { // el cañón 2 murió en el intento: click seco honesto
+      player.dryT = game.time + 0.5;
+      Sfx.dry();
+      showAmmoHint();
+    }
+    return;
+  }
+  player.pools[W.ammo].n -= need;
+  if (!first) { // eco del cañón 2: fogonazo más chico y media patada
+    Sfx[W.sfx]();
+    placeVmFlash(0.7); flashT = 0.04;
+    player.vmKick = Math.max(player.vmKick, 0.6);
+    player.recoilPitch += W.recoil * 0.6;
+    camera.getWorldPosition(_origin);
+    camera.getWorldDirection(_fwd);
+  }
+  let fxLeft = 3; // como el MORIS-12: daño a todos los pellets, FX solo en los 3 primeros
+  for (let i = 0; i < W.pellets; i++) {
+    const d = randomInCone(_fwd, W.spread);
+    if (rayShot(_origin.x, _origin.y, _origin.z, d.x, d.y, d.z, W.dmg, fxLeft > 0)) fxLeft--;
+  }
+  updateHud(); // el pool cae cañón a cañón
+}
+
+/* ============================================================ E4b — riel del Colastiné
+   GATILLO DE CARGA: mantener W.chargeT (0.35 s) el gatillo y disparar AL SOLTAR. El
+   anillo del crosshair es DOM (#railring en index.html): se llena con las vars CSS
+   --p1/--p2 (WebKit todavía no interpola @property, por eso son dos custom props).
+   Los tres caminos de gatillo (mouse, RT de mando, FIRE táctil) ya escriben `firing` por
+   toggleFiring → el flanco de suelta se pollea en update(), sin listeners nuevos por
+   input: desktop/mando/touch quedan intactos y el riel funciona idéntico en los tres.
+   Soltar ANTES de la carga = disipa (no consume nada — el costo se cobra al disparar).
+   El disparo es hitscan PERFORANTE: la lista COMPLETA de intersectObjects contra las
+   hitboxes (cada caja entry+exit → dedup por enemigo), cortada por el primer sólido. */
+const railRingEl = $('railring');
+let railRingP = null; // último valor escrito (string): el DOM no se toca cada frame
+function railRing(p) { // p < 0 → ocultar; 0..1 → llenado; 1 queda en modo "ready"
+  if (!railRingEl) return;
+  if (p < 0) { railRingP = null; railRingEl.className = ''; return; }
+  p = Math.min(1, p);
+  const v = p.toFixed(2); // a 60 fps son ~7 writes en toda la carga (0.35 s)
+  if (v !== railRingP) {
+    railRingP = v;
+    railRingEl.style.setProperty('--p1', v);
+    railRingEl.style.setProperty('--p2', v); // WebKit: --p2 es la hermana spec-ready
+    railRingEl.className = 'show' + (p >= 1 ? ' ready' : '');
+  }
+}
+function cancelRailCharge() { // troca / pausa / suelta temprana: nada estaba consumido
+  player.chargeT = 0;
+  railRing(-1);
+}
+function railChargeStart(W) {
+  if (player.pools[W.ammo].n < W.ammoCost) { // no llega a las 5 células: ni arranca la carga
+    if (game.time >= player.dryT) {
+      player.dryT = game.time + 0.5;
+      Sfx.dry();
+      showAmmoHint();
+    }
+    player.fireCd = 0.25; // gatillo hold: no spammar el click seco cada frame
+    return;
+  }
+  player.chargeT = 1e-4; // >0 marca "cargando" (distingue el frame de suelta del de inicio)
+  Sfx.railCharge();       // la subida dura W.chargeT: la barra del crosshair es audible
+}
+function releaseRail(W) {
+  if (player.chargeT < W.chargeT) { cancelRailCharge(); return; } // carga a medias: disipa gratis
+  player.chargeT = 0;
+  railRing(-1);
+  if (player.pools[W.ammo].n < W.ammoCost) { tryReload(); return; } // paranoia (pool no crece solo)
+  fireRail(W);
+}
+function fireRail(W) {
+  player.pools[W.ammo].n -= W.ammoCost;
+  player.fireCd = W.cad;   // cooldown POST-disparo (la carga en sí no lo pisa)
+  player.lastShotT = game.time;
+  Sfx[W.sfx]();
+  vmFireFx(W);             // patada + fogonazo del viewmodel como en todo el arsenal
+  camera.getWorldPosition(_origin);
+  camera.getWorldDirection(_fwd);
+  railPierce(W);
+  updateHud();             // las células bajan a la vista (5 por crack)
+}
+/* perforante: 160 a TODO enemigo del rayo. A diferencia del muzzle flash común, el riel
+   dibuja su línea aditiva a lo largo de TODO el rayo (pool `beams`, vida 0.15 s — más
+   larga que un tracer y cian puro) + flash de luz + chispas en el extremo. */
+function railPierce(W) {
+  raycaster.set(_origin, _fwd); // raycaster.far = 150 (el melee lo restaura siempre)
+  const hitsEnemy = raycaster.intersectObjects(enemyHitboxes, false); // lista COMPLETA, ordenada
+  const wHit = raycaster.intersectObjects(solids, false)[0];
+  const wallD = wHit ? wHit.distance : raycaster.far;
+  const end = _end.copy(_origin).addScaledVector(_fwd, wallD);
+  shootBeam(muzzleWorld(_mv), end); // _mv/_end son temps: shootBeam copia las coords
+  popFxLight(_origin, 0x66f6ff, 180, 0.3); // fogonazo del rayo, desde los ojos
+  burst(end, 0x66f6ff, 8, 5, 0.7, 2);      // chispas cian en pared o en el infinito
+  const hitOnce = []; // un raycast toca la caja del enemigo dos veces (entrada/salida):
+                      // dedup por enemigo — 160 UNA vez por cuerpo. Alloc por disparo
+                      // (cad 1.4 s): el camino caliente sigue sin alloc.
+  let any = false;
+  for (const h of hitsEnemy) {
+    if (h.distance > wallD) break; // la lista viene ordenada: lo que sigue está tras el muro
+    const en = h.object.userData.enemy;
+    if (!en || en.spawnT <= 0.3 || hitOnce.includes(en)) continue;
+    hitOnce.push(en);
+    burst(h.point, 0x66f6ff, 4, 4, 0.6, 2); // marca cian ANTES del daño (die() puede splicear)
+    en.takeDamage(W.dmg, h.point);
+    any = true;
+  }
+  if (any) hitmarkT = 0.12;
+  if (wHit) { // el extremo contra la geometría también sangra FX de impacto
+    _nMat.getNormalMatrix(camera.matrixWorld);
+    wallImpact(wHit.point, _hitN.copy(wHit.normal).applyMatrix3(_nMat).normalize());
+  }
+}
+
+/* pool de líneas de RAYO (distinto al de tracers: vida 0.15 s y opacidad plena — la firma
+   visual del riel). Con cad 1.4 s nunca hay más de un par vivas; se recicla la vieja. */
+const beams = [];
+for (let i = 0; i < 4; i++) {
+  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+  const line = new THREE.Line(g, new THREE.LineBasicMaterial({
+    color: neon(0x66f6ff, 2.6), transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false }));
+  line.frustumCulled = false;
+  scene.add(line);
+  beams.push({ line, life: 0, max: 0.15 });
+}
+function shootBeam(from, to, dur = 0.15) {
+  const b = beams.find(b => b.life <= 0) || beams[0];
+  const pos = b.line.geometry.attributes.position;
+  pos.setXYZ(0, from.x, from.y, from.z);
+  pos.setXYZ(1, to.x, to.y, to.z);
+  pos.needsUpdate = true;
+  b.life = b.max = dur;
+  b.line.material.opacity = 1;
+}
+function beamTick(dt) {
+  for (const b of beams) {
+    if (b.life <= 0) continue;
+    b.life -= dt;
+    b.line.material.opacity = b.life > 0 ? b.life / b.max : 0;
+  }
+}
+function clearBeams() { for (const b of beams) { b.life = 0; b.line.material.opacity = 0; } }
+
 /* --- kira: pool de 24 cohetes SIN alloc por disparo. Vuelven a la vida solo cuando
    explotan: contacto con enemigo, AABB de obstáculo, muros de arena o piso. --- */
 const rockets = [];
@@ -2228,13 +2566,160 @@ function clearRockets() {
   for (const r of rockets) { r.life = 0; r.mesh.visible = false; }
 }
 
+/* --- E4b mate: célula de plasma en vuelo — pool SEPARADO de los cohetes (no se toca la
+     física de Kira, que tiene splash/auto-daño propios). 16 es holgado: cad 0.16 s ×
+     vuelo <2.5 s → suele haber ~5 vivas. Sin splash: W.dmg (30) DIRECTO al enemigo que
+     toca y pop cian contra muro/caja/suelo o al expirar. --- */
+const cells = [];
+{
+  const cGeo = new THREE.SphereGeometry(0.09, 8, 6);
+  const cMat = new THREE.MeshBasicMaterial({ color: neon(0x5ee6ff, 2.2) }); // la célula del plasma, emisiva
+  for (let i = 0; i < 16; i++) {
+    const mesh = new THREE.Mesh(cGeo, cMat);
+    mesh.visible = false;
+    scene.add(mesh);
+    cells.push({ mesh, vel: new THREE.Vector3(), life: 0, trailT: 0 });
+  }
+}
+function fireCell(W) {
+  const q = cells.find(q => q.life <= 0) || cells[0];
+  camera.getWorldPosition(_origin);
+  q.mesh.position.copy(_origin);
+  q.mesh.position.y -= 0.1; // sale del pecho, no de los ojos
+  randomInCone(q.vel, W.spread).multiplyScalar(W.projVel); // 28 m/s: lenta-ish, se puede esquivar
+  q.life = 3;              // seguridad: la célula cruza la arena en ~2.3 s
+  q.trailT = 0;
+  q.mesh.visible = true;
+}
+function clearCells() { for (const q of cells) { q.life = 0; q.mesh.visible = false; } }
+function updateCells(dt) {
+  const W = WEAPONS.mate;
+  for (const q of cells) {
+    if (q.life <= 0) continue;
+    q.life -= dt;
+    const p = q.mesh.position;
+    p.addScaledVector(q.vel, dt);
+    q.trailT -= dt;
+    if (q.trailT <= 0) { q.trailT = 0.05; burst(p, 0x5ee6ff, 1, 0.4, 0.35, 1.7); } // estela titilante
+    let pop = q.life <= 0; // expiró: hace pop en el aire y ya
+    if (Math.abs(p.x) >= ARENA - 0.15 || Math.abs(p.z) >= ARENA - 0.15 || p.y <= 0.06) pop = true;
+    for (const b of boxes) // mismo test punto-vs-AABB del cohete
+      if (p.x > b.min.x && p.x < b.max.x && p.y > b.min.y && p.y < b.max.y && p.z > b.min.z && p.z < b.max.z) { pop = true; break; }
+    let hit = false;
+    if (!pop) for (let i = enemies.length - 1; i >= 0; i--) { // inverso: el impacto puede matar
+      const en = enemies[i];
+      const rr = 0.85 * en.T.scale + 0.14; // media hitbox + la bolita cian
+      const dx = en.g.position.x - p.x, dy = en.baseY - p.y, dz = en.g.position.z - p.z;
+      if (dx * dx + dy * dy + dz * dz < rr * rr) {
+        en.chest(_flP);
+        en.takeDamage(W.dmg, _flP); // 30 directo en el impacto — sin splash, sin area
+        hitmarkT = Math.max(hitmarkT, 0.1);
+        burst(p, 0x5ee6ff, 8, 5, 0.6, 2); // pop cian en el pecho
+        hit = true;
+        break;
+      }
+    }
+    if (pop || hit) {
+      q.life = 0;
+      q.mesh.visible = false;
+      if (!hit) burst(p, 0x5ee6ff, 7, 4, 0.5, 1.9); // pop contra geometría/expiración
+    }
+  }
+}
+
+/* ============================================================ E4b — COMPILADOR (BFG local)
+   Orbe verde emisivo: pool PROPIO de 6 (cadencia 2.0 s × vida 3 s: con 2 en vuelo va sobrado).
+   Vuelo recto 12 m/s compartido con el patrón del cohete (piso/muros/cajas/enemigos) y
+   detona al impactar, o a los 3 s de expirar. La onda NO tiene decaimiento: BFG_DMG (300)
+   a TODO enemigo a < BFG_RADIUS (8 m) del centro — el score de esas muertes va al jugador
+   porque die() suma siempre (single player: todo cuenta). Los sobrevivientes quedan
+   SCORCHED 3 s (tinte oscuro persistente; el riel, a diferencia, no deja marca).
+   Auto-daño al jugador: NO (spec E4b) — el riesgo del compilador son sus 10 argents, no
+   pisarse la propia onda. FX: burst doble + luz + screen shake de 0.3 s (roll+offset de
+   cámara, ver shakeT en update) + bfgBoom. */
+const BFG_DMG = 300, BFG_RADIUS = 8, SCORCH_T = 3;
+const orbs = [];
+{
+  const oGeo = new THREE.SphereGeometry(0.24, 10, 8);
+  const oMat = new THREE.MeshBasicMaterial({ color: neon(0x6dff5e, 2.2) }); // emisivo: el bloom lo corona
+  for (let i = 0; i < 6; i++) {
+    const mesh = new THREE.Mesh(oGeo, oMat);
+    mesh.visible = false;
+    scene.add(mesh);
+    orbs.push({ mesh, vel: new THREE.Vector3(), life: 0, trailT: 0 });
+  }
+}
+function fireOrb(W) {
+  const o = orbs.find(o => o.life <= 0) || orbs[0];
+  camera.getWorldPosition(_origin);
+  o.mesh.position.copy(_origin);
+  o.mesh.position.y -= 0.1; // sale del pecho, no de los ojos (misma regla que Kira)
+  randomInCone(o.vel, 0.006).multiplyScalar(W.projVel);
+  o.life = W.life;
+  o.trailT = 0;
+  o.mesh.visible = true;
+}
+function clearOrbs() { for (const o of orbs) { o.life = 0; o.mesh.visible = false; } }
+function updateOrbs(dt) {
+  const W = WEAPONS.compilador;
+  for (const o of orbs) {
+    if (o.life <= 0) continue;
+    o.life -= dt;
+    const p = o.mesh.position;
+    p.addScaledVector(o.vel, dt);
+    o.trailT -= dt;
+    if (o.trailT <= 0) { o.trailT = 0.06; burst(p, 0x6dff5e, 1, 0.7, 0.6, 1.8); } // estela emisiva
+    let boom = o.life <= 0; // expiración a los 3 s
+    if (Math.abs(p.x) >= ARENA - 0.15 || Math.abs(p.z) >= ARENA - 0.15 || p.y <= 0.06) boom = true;
+    for (const b of boxes) // mismo test punto-vs-AABB del cohete
+      if (p.x > b.min.x && p.x < b.max.x && p.y > b.min.y && p.y < b.max.y && p.z > b.min.z && p.z < b.max.z) { boom = true; break; }
+    if (!boom) for (let i = enemies.length - 1; i >= 0; i--) { // inverso: la onda splicea
+      const en = enemies[i];
+      const rr = 0.85 * en.T.scale + 0.3; // media hitbox + margen del orbe
+      const dx = en.g.position.x - p.x, dy = en.baseY - p.y, dz = en.g.position.z - p.z;
+      if (dx * dx + dy * dy + dz * dz < rr * rr) { boom = true; break; }
+    }
+    if (boom) {
+      o.life = 0;
+      o.mesh.visible = false;
+      bfgBlast(p);
+    }
+  }
+}
+function bfgBlast(pos) {
+  Sfx.bfgBoom();
+  player.shakeT = 0.3; // screen shake breve: roll + offset, decae lineal (update/cámara)
+  burst(pos, 0x6dff5e, 26, 10, 1.7, 2.4); // núcleo verde
+  burst(pos, 0xd9ffc8, 12, 6, 1.1, 1.6);  // ceniza clara por encima
+  popFxLight(pos, 0x6dff5e, 340, 0.55);   // la luz más fuerte del repertorio (era un BFG)
+  const r = BFG_RADIUS + 0.6;
+  const r2 = r * r;
+  for (let i = enemies.length - 1; i >= 0; i--) { // inverso: takeDamage puede matar (splice)
+    const en = enemies[i];
+    const dx = en.g.position.x - pos.x,
+          dy = en.baseY + 0.4 - pos.y,          // pecho, como el splash de explode()
+          dz = en.g.position.z - pos.z;
+    if (dx * dx + dy * dy + dz * dz > r2) continue;
+    en.chest(_flP);
+    en.takeDamage(BFG_DMG, _flP); // 300 sin decaimiento: a <8 m no hay superviviente sano
+    if (en.hp > 0) en.scorch(SCORCH_T); // (los que sobreviven por spawn/hp extra quedan fritos)
+  }
+}
+
 /* --- fireWeapon: UN disparo del arma actual (lo llama update() cuando firing y el
    cooldown llegó a 0). Consume el mag, dispara según W.type y dispara el FX común. --- */
 function fireWeapon() {
   const W = curWeapon();
+  if (W.type === 'rail') return; // el riel dispara por releaseRail() (carga de gatillo), nunca por cadencia
   if (W.magSize > 0) {
     if (player.mags[player.weaponId] <= 0) { tryReload(); return; } // seco: recarga o click vacío
     player.mags[player.weaponId]--;
+  } else if (W.ammoCost && player.pools[W.ammo].n < W.ammoCost) {
+    // E4b pool-directo (changó): si el pool no llega al costo del disparo completo, click
+    // vacío + hint ANTES de cualquier FX — acá nada se gasta a medias. (El riel con costo
+    // hace su check propio en railChargeStart, antes de la carga.)
+    tryReload();
+    return;
   }
   player.fireCd = W.cad;
   player.lastShotT = game.time;
@@ -2271,8 +2756,17 @@ function fireWeapon() {
       const d = randomInCone(_dir, W.spread);
       if (rayShot(_origin.x, _origin.y, _origin.z, d.x, d.y, d.z, W.dmg, fxLeft > 0)) fxLeft--;
     }
+  } else if (W.type === 'twin') {
+    // changó (E4b): cañón 1 sale ahora con el FX común de arriba; el cañón 2 queda
+    // agendado en player.twinT → update() lo dispara a los W.burst s SOLO si queda pool
+    // (fireTwinBarrel cobra al momento de salir, nunca antes).
+    fireTwinBarrel(W, true);
+    player.twinNext = W.bullets - 1;
+    player.twinT = W.burst;
   } else if (W.type === 'projectile') {
-    fireRocket();
+    if (W.orb) fireOrb(W);       // compilador: orbe BFG (pool propio, detonación en updateOrbs)
+    else if (W.splash > 0) fireRocket(); // kira: cohete clásico (pool 24, splash)
+    else fireCell(W);            // mate: célula de plasma (pool 16, daño directo)
   }
   // flow (asador) llega acá solo si alguien lo llama por cadencia: update() maneja el
   // chorro por tick; ninguna fila de la tabla le pone cad>0 a un flow.
@@ -2354,11 +2848,23 @@ function update(dt) {
   const strafeAmt = moving ? wish.dot(r) : 0;
   player.roll += (-strafeAmt * 0.025 - player.roll) * Math.min(1, dt * 8);
   camera.rotation.z = player.roll;
+  // E4b — screen shake del Compilador: 0.3 s de roll + offset con amplitud que decae
+  // lineal. Se aplica DESPUÉS del copiado yaw/pitch/roll y NO escribe player.pos ni
+  // player.roll: el shake es puro frame de cámara, nunca muerde la posición real.
+  if (player.shakeT > 0) {
+    player.shakeT = Math.max(0, player.shakeT - dt);
+    const k = player.shakeT / 0.3;
+    camera.rotation.z += rand(-0.028, 0.028) * k;
+    camera.position.x += rand(-0.075, 0.075) * k;
+    camera.position.y += rand(-0.055, 0.055) * k;
+    camera.position.z += rand(-0.075, 0.075) * k;
+  }
 
   // E4a — viewmodel pixelado: sway idle con la velocidad + retorno + kick (ver el
   // bloque del viewmodel; el viejo gun 3D de cubos salió del juego).
   updateViewmodel(dt, moving);
   flashTick(dt);
+  beamTick(dt); // E4b: fade de las líneas del riel (vida 0.15 s)
 
   /* --- disparo / recarga (E4a) ---
      heat: solo armas con heatMax (ametralladora). "40 ráfagas SEGUIDAS": el heat NO
@@ -2372,6 +2878,20 @@ function update(dt) {
     player.cooling = Math.max(0, player.cooling - dt);
     if (player.cooling === 0) updateWname(); // sale de "CALOR"
   }
+  /* --- E4b riel: carga con el gatillo mantenida y disparo AL SOLTAR. Como mouse/RT/FIRE
+         táctil escriben `firing` por toggleFiring, el flanco de suelta se pollea acá: el
+         mando y el touch no necesitaron ni un listener nuevo (ver bloque rail*). --- */
+  if (Wc.type === 'rail') {
+    if (firing && player.chargeT === 0 && player.fireCd <= 0 &&
+        player.cooling <= 0 && player.reloading <= 0) railChargeStart(Wc);
+    if (player.chargeT > 0) {
+      if (!firing) releaseRail(Wc); // solté: dispara si la carga estaba llena, si no disipa
+      else {
+        player.chargeT += dt;
+        railRing(player.chargeT / Wc.chargeT); // anillo DOM del crosshair llenándose
+      }
+    }
+  } else if (player.chargeT !== 0) cancelRailCharge(); // troca o estado raro: disipa gratis
   player.fireCd -= dt;
   const flowOn = Wc.type === 'flow' && firing && player.reloading <= 0 && player.pools[Wc.ammo].n > 0;
   if (flowOn) {
@@ -2387,9 +2907,9 @@ function update(dt) {
     // destello de 1 frame como el de los cañones, es un chorro
     placeVmFlash(1.25);
     flashT = 0.06;
-  } else if (firing && Wc.type !== 'flow' && player.fireCd <= 0 &&
+  } else if (firing && Wc.type !== 'flow' && Wc.type !== 'rail' && player.fireCd <= 0 &&
              player.cooling <= 0 && player.reloading <= 0) {
-    fireWeapon();
+    fireWeapon(); // (el riel está fuera de la cadencia: su disparo sale del releaseRail de arriba)
   }
   if (player.reloading > 0) {
     player.reloading -= dt;
@@ -2403,7 +2923,20 @@ function update(dt) {
       updateHud();
     }
   }
+  // changó (E4b): segundo cañón 0.25 s después del clic. Consume SOLO si al salir queda
+  // cartuchos; trocar arma cancela la promesa (switchWeapon). cooling/reloading lo
+  // respetan por coherencia con el resto del arsenal.
+  if (player.twinT > 0) {
+    player.twinT -= dt;
+    if (player.twinT <= 0) {
+      if (player.twinNext > 0 && player.weaponId === 'chango' &&
+          player.cooling <= 0 && player.reloading <= 0) fireTwinBarrel(WEAPONS.chango, false);
+      player.twinNext = 0;
+    }
+  }
   rocketsUpdate(dt); // cohetes de Kira en vuelo (pool 24, sin alloc)
+  updateCells(dt);   // E4b: células de Mate (pool 16, daño directo al impacto)
+  updateOrbs(dt);    // E4b: orbes del compilador (pool 6; detonan al impactar o a los 3 s)
 
   /* --- enemigos (E4a: loop inverso — el DoT de quemado puede matar al enemigo desde su
          propio update() y splicea `enemies` a mitad de recorrido; yendo al revés el
@@ -2442,13 +2975,18 @@ function update(dt) {
         continue;
       }
     }
-    const view = ((p.t * 2) | 0) & 3; // ciclo 2 Hz: idle0 → idle1 → idle1' → idle0'
-    if (view !== p.view) { p.view = view; p.tex.offset.x = view * 0.25; }
+    if (p.kind) { // atlas 4 vistas: recorte por offset (el pickup de arma NO tiene atlas)
+      const view = ((p.t * 2) | 0) & 3; // ciclo 2 Hz: idle0 → idle1 → idle1' → idle0'
+      if (view !== p.view) { p.view = view; p.tex.offset.x = view * 0.25; }
+    }
     p.mesh.rotation.y = p.t * 1.15 + p.phase;                     // rotación lenta
-    p.mesh.position.y = p.baseY + Math.sin(p.t * 2.6 + p.phase) * 0.05; // bob vertical
+    if (p.kind) p.mesh.position.y = p.baseY + Math.sin(p.t * 2.6 + p.phase) * 0.05; // bob vertical
+    // E4b: el pickup de ARMA usa una sola textura (sin offsets) y respira más lento,
+    // acorde a su levitación alta.
+    else p.mesh.position.y = p.baseY + Math.sin(p.t * 1.6 + p.phase) * 0.09;
     p.mesh.visible = p.ttl <= 0 || p.ttl > 5 || ((p.ttl * 5) | 0) % 2 === 0;
     const dx = p.mesh.position.x - player.pos.x, dz = p.mesh.position.z - player.pos.z;
-    if (dx * dx + dz * dz < 1.44 && pickupUsable(p.kind)) collectPickup(p);
+    if (dx * dx + dz * dz < 1.44 && pickupUsable(p.kind, p.weapon)) collectPickup(p);
   }
 
   /* --- partículas */
@@ -2626,7 +3164,8 @@ if (new URLSearchParams(location.search).has('sprite') || localStorage.getItem('
     scene.add(m);
     pre.push(m);
   });
-  // E4a: las 6 siluetas del viewmodel (grilla 3×2 arriba) — iterar sprites.js sin jugar
+  // E4a/E4b: las 10 siluetas del viewmodel (grilla 5×2 arriba — 3 columnas no las hacen
+  // entrar desde que el arsenal está completo) — iterar sprites.js sin jugar
   Object.keys(WEAPONS).forEach((id, i) => {
     const art = makeWeaponSprite(WEAPONS[id].silhouette || 'pistol', WEAPONS[id].accent || '#54f0ff');
     const tex = new THREE.CanvasTexture(art.canvas);
@@ -2634,7 +3173,7 @@ if (new URLSearchParams(location.search).has('sprite') || localStorage.getItem('
     tex.generateMipmaps = false; tex.colorSpace = THREE.SRGBColorSpace;
     const m = new THREE.Mesh(new THREE.PlaneGeometry(1.36, 1.02), new THREE.MeshBasicMaterial({
       map: tex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
-    m.position.set(((i % 3) - 1) * 1.5, player.pos.y + 1.75 - ((i / 3) | 0) * 1.15, -4.2);
+    m.position.set(((i % 5) - 2) * 1.5, player.pos.y + 0.3 - ((i / 5) | 0) * 1.15, -4.2);
     scene.add(m);
     pre.push(m);
   });
