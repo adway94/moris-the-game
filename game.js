@@ -1,10 +1,29 @@
 // MORIS // ARENA — wave-based FPS, three.js r160, sin dependencias externas.
 import * as THREE from 'three';
+import { EffectComposer } from './vendor/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from './vendor/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from './vendor/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from './vendor/examples/jsm/postprocessing/OutputPass.js';
 
 /* ============================================================ utils */
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const $ = id => document.getElementById(id);
+
+// Color HDR para materiales emisivos: convierte hex sRGB a lineal y lo empuja
+// por encima del threshold del bloom (0.75) para que el neón genere glow real.
+const neon = (hex, k = 2) => new THREE.Color(hex).multiplyScalar(k);
+
+// rect redondeado compatible (sin depender de ctx.roundRect)
+function rr(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
 
 /* ============================================================ audio (WebAudio procedural, sin assets) */
 const Sfx = {
@@ -68,14 +87,116 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05070d);
-scene.fog = new THREE.FogExp2(0x05070d, 0.018);
+// niebla azulada: los objetos lejanos se funden con el horizonte del cielo
+scene.fog = new THREE.FogExp2(0x081327, 0.016);
 
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 200);
+
+/* ============================================================ cielo procedural
+   esfera BackSide con gradiente vertical (negro cenital -> azul profundo en el
+   horizonte) + campo de ~1500 estrellas Points con titilación global por opacity. */
+function canvasTex(size, draw, repX = 1, repY = 1) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = size;
+  draw(cv.getContext('2d'), size);
+  const tx = new THREE.CanvasTexture(cv);
+  tx.colorSpace = THREE.SRGBColorSpace;
+  tx.wrapS = tx.wrapT = THREE.RepeatWrapping;
+  tx.repeat.set(repX, repY);
+  tx.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tx;
+}
+
+// gradiente vertical: fila 0 del canvas = cenit (v=1), última fila = bajo horizonte
+const skyTex = canvasTex(64, (c, S) => {
+  const g = c.createLinearGradient(0, 0, 0, S);
+  g.addColorStop(0.00, '#000104');
+  g.addColorStop(0.34, '#020715');
+  g.addColorStop(0.62, '#082142');
+  g.addColorStop(0.86, '#114374');
+  g.addColorStop(0.955, '#1d5d94'); // azul profundo del horizonte
+  g.addColorStop(1.00, '#0a1a30');
+  c.fillStyle = g; c.fillRect(0, 0, S, S);
+  // ruido tipo banding: líneas horizontales sutiles que el mip-mapping promedia
+  for (let i = 0; i < 60; i++) {
+    c.fillStyle = `rgba(150,190,255,${rand(0.006, 0.02).toFixed(3)})`;
+    c.fillRect(0, rand(0, S), S, 1);
+  }
+});
+skyTex.wrapS = THREE.ClampToEdgeWrapping;
+skyTex.wrapT = THREE.ClampToEdgeWrapping;
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(150, 32, 20),
+  new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false }));
+scene.add(sky);
+
+// estrellas: cascarón esférico entre 72 y 138 m (dentro del cielo, bajo el far plane)
+const STAR_N = 1500;
+const starGeo = new THREE.BufferGeometry();
+{
+  const pos = new Float32Array(STAR_N * 3), col = new Float32Array(STAR_N * 3);
+  const tmp = new THREE.Color();
+  for (let i = 0; i < STAR_N; i++) {
+    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+    const rad = rand(72, 138), r = Math.sqrt(1 - u * u);
+    pos[i * 3] = Math.cos(th) * r * rad;
+    pos[i * 3 + 1] = u * rad;
+    pos[i * 3 + 2] = Math.sin(th) * r * rad;
+    const k = Math.random();
+    if (k > 0.86) tmp.setRGB(1.7, 1.15, 0.75);          // cálidas
+    else if (k > 0.55) tmp.setRGB(0.95, 1.3, 1.9);      // azules
+    else tmp.setRGB(1.35, 1.5, 1.65);                   // blancas
+    tmp.multiplyScalar(rand(0.4, 1.15)); // parte queda bajo el threshold: no todo titila en HDR
+    col[i * 3] = tmp.r; col[i * 3 + 1] = tmp.g; col[i * 3 + 2] = tmp.b;
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  starGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+}
+const starTex = canvasTex(64, (c, S) => {
+  const g = c.createRadialGradient(S / 2, S / 2, 1, S / 2, S / 2, S / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.35, 'rgba(255,255,255,0.5)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = g; c.fillRect(0, 0, S, S);
+});
+const starMat = new THREE.PointsMaterial({
+  size: 0.42, sizeAttenuation: true, map: starTex, vertexColors: true,
+  transparent: true, opacity: 0.92, depthWrite: false,
+  blending: THREE.AdditiveBlending, fog: false });
+const stars = new THREE.Points(starGeo, starMat);
+stars.renderOrder = -1;
+scene.add(stars);
+
+// entorno PMREM a partir del propio gradiente: reflejos azules sutiles en PBR
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromEquirectangular(skyTex).texture;
+  pmrem.dispose();
+}
+
+/* ============================================================ post-processing
+   RenderPass (HDR, MSAA x4) -> UnrealBloomPass -> OutputPass (tonemap + sRGB).
+   Con composer el tonemap/sRGB del renderer NO se aplica en los pases intermedios
+   (solo OutputPass al screen), por eso el neón HDR atraviesa el umbral 0.75 y hace
+   bloom real. */
+const rtMain = new THREE.WebGLRenderTarget(
+  Math.max(1, Math.floor(innerWidth * renderer.getPixelRatio())),
+  Math.max(1, Math.floor(innerHeight * renderer.getPixelRatio())),
+  { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, rtMain);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.6, 0.75);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+// normaliza tamaños: con RT custom el composer inicializa _width al tamaño efectivo
+// (ya multiplicada por pixelRatio) y addPass volvería a escalarla en pantallas HiDPI.
+composer.setSize(innerWidth, innerHeight);
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
 });
 
 /* lights */
@@ -105,29 +226,114 @@ function addSolid(mesh, collide = true) {
   }
 }
 
-// piso con textura de grilla pintada en canvas
-const gridCv = document.createElement('canvas');
-gridCv.width = gridCv.height = 128;
-const gx = gridCv.getContext('2d');
-gx.fillStyle = '#0a0f1c'; gx.fillRect(0, 0, 128, 128);
-gx.strokeStyle = 'rgba(84,240,255,0.16)'; gx.lineWidth = 2;
-gx.strokeRect(1, 1, 126, 126);
-gx.strokeStyle = 'rgba(84,240,255,0.05)'; gx.lineWidth = 1;
-gx.beginPath(); gx.moveTo(64, 0); gx.lineTo(64, 128); gx.moveTo(0, 64); gx.lineTo(128, 64); gx.stroke();
-const gridTex = new THREE.CanvasTexture(gridCv);
-gridTex.wrapS = gridTex.wrapT = THREE.RepeatWrapping;
-gridTex.repeat.set(ARENA, ARENA);
+/* ---------------- texturas procedurales del arena (canvas, sin assets) ------- */
+function specks(c, S, n, pick) {
+  for (let i = 0; i < n; i++) { c.fillStyle = pick(); c.fillRect(rand(0, S), rand(0, S), 1, 1); }
+}
+function rivet(c, x, y, r = 6) {
+  c.fillStyle = '#050810'; c.beginPath(); c.arc(x, y, r * 1.25, 0, 7); c.fill();
+  c.fillStyle = '#22304e'; c.beginPath(); c.arc(x, y, r * 0.9, 0, 7); c.fill();
+  c.fillStyle = '#43597f'; c.beginPath(); c.arc(x - r * 0.3, y - r * 0.3, r * 0.38, 0, 7); c.fill();
+  c.fillStyle = 'rgba(0,0,0,0.5)'; c.beginPath(); c.arc(x + r * 0.35, y + r * 0.4, r * 0.24, 0, 7); c.fill();
+}
+
+// Piso: paneles metálicos sci-fi — placa con bisel, remaches, junta cian en la
+// costura, ranura de ventilación, código de barras y ruido sutil. 1 tile = 4 m.
+const floorTex = canvasTex(512, (c, S) => {
+  c.fillStyle = '#0d1424'; c.fillRect(0, 0, S, S);
+  for (let i = 0; i < 240; i++) { // rayado vertical tipo chapa
+    c.fillStyle = `rgba(${(120 + rand(0, 90)) | 0},${(160 + rand(0, 75)) | 0},255,${rand(0.012, 0.04).toFixed(3)})`;
+    c.fillRect(rand(0, S), 0, rand(0.6, 2.4), S);
+  }
+  // costura del tile (biselada, con junta emisiva tenue que al repetir forma la grilla)
+  c.strokeStyle = '#060a13'; c.lineWidth = 26; c.strokeRect(14, 14, S - 28, S - 28);
+  c.strokeStyle = 'rgba(84,240,255,0.30)'; c.lineWidth = 3; c.strokeRect(14, 14, S - 28, S - 28);
+  c.strokeStyle = 'rgba(84,240,255,0.09)'; c.lineWidth = 9; c.strokeRect(14, 14, S - 28, S - 28);
+  // placa interior con bisel (luz arriba/izq, sombra abajo/der)
+  c.fillStyle = '#121a2e'; c.fillRect(30, 30, S - 60, S - 60);
+  c.strokeStyle = '#28375a'; c.lineWidth = 5;
+  c.beginPath(); c.moveTo(30, 484); c.lineTo(30, 30); c.lineTo(484, 30); c.stroke();
+  c.strokeStyle = '#05080f';
+  c.beginPath(); c.moveTo(484, 32); c.lineTo(484, 484); c.lineTo(32, 484); c.stroke();
+  for (let i = 0; i < 150; i++) { // ruido fino sobre la placa
+    c.fillStyle = Math.random() < 0.5 ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.05)';
+    c.fillRect(rand(34, 476), rand(34, 476), rand(1, 3), 1);
+  }
+  // sub-panel interior rebajado
+  c.strokeStyle = 'rgba(0,0,0,0.55)'; c.lineWidth = 3; c.strokeRect(150, 150, 212, 212);
+  c.strokeStyle = 'rgba(160,200,255,0.05)'; c.lineWidth = 1; c.strokeRect(153, 153, 206, 206);
+  [58, 454].forEach(x => [58, 454].forEach(y => rivet(c, x, y)));
+  // ranura de ventilación
+  c.fillStyle = '#060a12'; rr(c, 330, 340, 128, 40, 8); c.fill();
+  c.strokeStyle = 'rgba(160,200,255,0.08)'; c.lineWidth = 1; rr(c, 330, 340, 128, 40, 8); c.stroke();
+  c.fillStyle = '#1c2942';
+  for (let i = 0; i < 5; i++) c.fillRect(338, 346 + i * 7, 112, 2);
+  // código de barras + marcas de stencil cian
+  let bx = 66;
+  while (bx < 170) { const w = rand(1, 3.4); c.fillStyle = `rgba(150,190,220,${rand(0.07, 0.18).toFixed(2)})`; c.fillRect(bx, 344, w, 34); bx += w + rand(1.5, 4); }
+  c.fillStyle = 'rgba(84,240,255,0.28)'; c.fillRect(66, 300, 46, 5); c.fillRect(66, 311, 22, 5);
+  c.fillStyle = 'rgba(84,240,255,0.16)'; c.fillRect(404, 96, 5, 30); c.fillRect(415, 96, 5, 18);
+  specks(c, S, 220, () => Math.random() < 0.5 ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.08)');
+}, 16, 16);
 
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(ARENA * 2, ARENA * 2),
-  new THREE.MeshStandardMaterial({ map: gridTex, roughness: 0.9, metalness: 0.15 }));
+  new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.7, metalness: 0.32, envMapIntensity: 0.35 }));
 floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true;
 scene.add(floor);
 
-// muros perimetrales
-const wallMat = new THREE.MeshStandardMaterial({ color: 0x16203a, roughness: 0.8, metalness: 0.3 });
-const trimMat = new THREE.MeshBasicMaterial({ color: 0x54f0ff });
+// Muros: paneles verticales con rejilla de detalle, franja de chevrons naranjas
+// de advertición abajo y zócalo oscuro. 1 tile ≈ 6 × 5 m (repeat 11 × 1).
+const wallTex = canvasTex(256, (c, S) => {
+  c.fillStyle = '#101a30'; c.fillRect(0, 0, S, S);
+  // rejilla sutil en toda la cara
+  c.strokeStyle = 'rgba(120,180,255,0.035)'; c.lineWidth = 1;
+  c.beginPath();
+  for (let x = 16; x < S; x += 16) { c.moveTo(x + 0.5, 0); c.lineTo(x + 0.5, S); }
+  for (let y = 16; y < S; y += 16) { c.moveTo(0, y + 0.5); c.lineTo(S, y + 0.5); }
+  c.stroke();
+  // juntas verticales de panel (cada 64 px = ~1.5 m) con filo iluminado
+  [0, 64, 128, 192].forEach(x => {
+    c.fillStyle = '#070b15'; c.fillRect(x - 2, 0, 5, S);
+    c.fillStyle = 'rgba(150,190,255,0.10)'; c.fillRect(x + 3, 0, 1, S);
+  });
+  // pernos a media altura
+  [32, 96, 160, 224].forEach(x => rivet(c, x, 108, 3));
+  // sombra del borde superior
+  const g = c.createLinearGradient(0, 0, 0, 68);
+  g.addColorStop(0, 'rgba(0,0,0,0.5)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g; c.fillRect(0, 0, S, 68);
+  // ---- franja de chevrons naranjas (paso 32 → envuelve sin costura) ----
+  const BY = S - 88, BH = 54;
+  c.save();
+  c.beginPath(); c.rect(0, BY, S, BH); c.clip();
+  c.fillStyle = '#1a1206'; c.fillRect(0, BY, S, BH);
+  c.lineCap = 'square';
+  for (let x = -S; x < S * 2; x += 32) {
+    c.strokeStyle = '#c96a1c'; c.lineWidth = 15;
+    c.beginPath(); c.moveTo(x, BY + BH + 20); c.lineTo(x + BH + 40, BY - 20); c.stroke();
+    c.strokeStyle = 'rgba(255,196,96,0.5)'; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(x, BY + BH + 20); c.lineTo(x + BH + 40, BY - 20); c.stroke();
+  }
+  c.restore();
+  c.fillStyle = '#05070c'; c.fillRect(0, BY - 5, S, 5); c.fillRect(0, BY + BH, S, 4);
+  c.fillStyle = 'rgba(255,154,61,0.55)'; c.fillRect(0, BY - 8, S, 2);
+  // zócalo inferior
+  const g2 = c.createLinearGradient(0, S - 34, 0, S);
+  g2.addColorStop(0, 'rgba(2,4,9,0.15)'); g2.addColorStop(1, 'rgba(2,4,9,0.85)');
+  c.fillStyle = g2; c.fillRect(0, S - 34, S, 34);
+  // rayones y mugre
+  for (let i = 0; i < 26; i++) {
+    c.strokeStyle = `rgba(0,0,0,${rand(0.12, 0.3).toFixed(2)})`; c.lineWidth = rand(1, 2.4);
+    const x = rand(0, S), y = rand(0, S - 96), l = rand(6, 34);
+    c.beginPath(); c.moveTo(x, y); c.lineTo(x + rand(-l, l), y + rand(-l * 0.3, l * 0.3)); c.stroke();
+  }
+  specks(c, S, 160, () => Math.random() < 0.6 ? 'rgba(0,0,0,0.10)' : 'rgba(160,200,255,0.04)');
+}, 11, 1);
+
+const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.8, metalness: 0.35, envMapIntensity: 0.3 });
+const trimMat = new THREE.MeshBasicMaterial({ color: neon(0x54f0ff, 1.55) }); // filo superior: bloom suave
 [[0, -ARENA - 0.5, ARENA * 2 + 2, 1], [0, ARENA + 0.5, ARENA * 2 + 2, 1],
  [-ARENA - 0.5, 0, 1, ARENA * 2 + 2], [ARENA + 0.5, 0, 1, ARENA * 2 + 2]].forEach(([x, z, w, d]) => {
   const wall = new THREE.Mesh(new THREE.BoxGeometry(w, WALL_H, d), wallMat);
@@ -138,8 +344,53 @@ const trimMat = new THREE.MeshBasicMaterial({ color: 0x54f0ff });
   scene.add(trim);
 });
 
-// obstáculos: cajas y pilones neón
-const obMat = new THREE.MeshStandardMaterial({ color: 0x243352, roughness: 0.6, metalness: 0.35 });
+// Obstáculos: metal cepillado con bordes achaflanados gastados y esquinas
+// desportilladas (el desgaste vive en los bordes del UV de cada cara).
+const obTex = canvasTex(256, (c, S) => {
+  c.fillStyle = '#202c48'; c.fillRect(0, 0, S, S);
+  for (let i = 0; i < 340; i++) { // cepillado horizontal
+    c.fillStyle = Math.random() < 0.55
+      ? `rgba(190,215,255,${rand(0.015, 0.055).toFixed(3)})`
+      : `rgba(0,0,0,${rand(0.02, 0.06).toFixed(3)})`;
+    c.fillRect(0, rand(0, S), S, rand(0.6, 2));
+  }
+  // bisel de aristas: gradientes interior + hilo brillante del chaflán
+  const gl = [c.createLinearGradient(0, 0, 0, 26), c.createLinearGradient(0, S - 26, 0, S),
+              c.createLinearGradient(0, 0, 26, 0), c.createLinearGradient(S - 26, 0, S, 0)];
+  const fills = ['rgba(200,222,255,0.10)', 'rgba(0,0,0,0.38)', 'rgba(160,190,240,0.06)', 'rgba(0,0,0,0.20)'];
+  gl[0].addColorStop(0, fills[0]); gl[0].addColorStop(1, 'rgba(0,0,0,0)');
+  gl[1].addColorStop(0, 'rgba(0,0,0,0)'); gl[1].addColorStop(1, fills[1]);
+  gl[2].addColorStop(0, fills[2]); gl[2].addColorStop(1, 'rgba(0,0,0,0)');
+  gl[3].addColorStop(0, 'rgba(0,0,0,0)'); gl[3].addColorStop(1, fills[3]);
+  c.fillStyle = gl[0]; c.fillRect(0, 0, S, 26);
+  c.fillStyle = gl[1]; c.fillRect(0, S - 26, S, 26);
+  c.fillStyle = gl[2]; c.fillRect(0, 0, 26, S);
+  c.fillStyle = gl[3]; c.fillRect(S - 26, 0, 26, S);
+  c.strokeStyle = 'rgba(205,225,255,0.30)'; c.lineWidth = 1; c.strokeRect(0.5, 0.5, S - 1, S - 1);
+  // desgaste de esquinas: manchas claras + picaduras oscuras + rasguños radiales
+  [[14, 14, 1, 1], [S - 14, 14, -1, 1], [14, S - 14, 1, -1], [S - 14, S - 14, -1, -1]].forEach(([cx, cy, sx, sy]) => {
+    for (let i = 0; i < 24; i++) {
+      c.fillStyle = `rgba(208,226,250,${rand(0.05, 0.24).toFixed(2)})`;
+      c.beginPath(); c.ellipse(cx + sx * rand(0, 32), cy + sy * rand(0, 32), rand(0.5, 2.6), rand(0.5, 2.2), rand(0, 3.14), 0, 7); c.fill();
+    }
+    for (let i = 0; i < 10; i++) {
+      c.fillStyle = `rgba(8,12,22,${rand(0.15, 0.38).toFixed(2)})`;
+      c.beginPath(); c.arc(cx + sx * rand(0, 28), cy + sy * rand(0, 28), rand(0.4, 1.8), 0, 7); c.fill();
+    }
+    for (let i = 0; i < 5; i++) {
+      c.strokeStyle = `rgba(220,235,255,${rand(0.06, 0.16).toFixed(2)})`; c.lineWidth = rand(0.5, 1.2);
+      const a = rand(0.6, 2.2);
+      c.beginPath(); c.moveTo(cx, cy);
+      c.lineTo(cx + Math.cos(a) * sx * rand(10, 36), cy + Math.sin(a) * sy * rand(10, 36)); c.stroke();
+    }
+    rivet(c, cx + sx * 8, cy + sy * 8, 3);
+  });
+  // marca de plantilla central
+  c.fillStyle = 'rgba(255,154,61,0.16)'; c.fillRect(104, 116, 48, 8); c.fillRect(104, 130, 26, 8);
+  let bx = 158; while (bx < 186) { const w = rand(1, 2.6); c.fillStyle = `rgba(200,220,250,${rand(0.08, 0.16).toFixed(2)})`; c.fillRect(bx, 116, w, 22); bx += w + rand(1.5, 3); }
+  specks(c, S, 180, () => Math.random() < 0.5 ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.09)');
+}, 2, 2);
+const obMat = new THREE.MeshStandardMaterial({ map: obTex, roughness: 0.55, metalness: 0.45, envMapIntensity: 0.55 });
 const OBSTACLES = [
   [-14, -10, 5, 3, 5], [13, 11, 6, 2, 4], [-11, 14, 4, 4, 8], [16, -14, 4, 5, 4],
   [0, -18, 8, 1.6, 3], [-20, 2, 3, 6, 3], [20, 4, 3, 2.5, 9], [4, 8, 3.5, 3, 3.5],
@@ -150,10 +401,14 @@ OBSTACLES.forEach(([x, z, w, h, d], i) => {
   const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), obMat);
   b.position.set(x, h / 2, z);
   addSolid(b);
-  if (i % 3 === 0) { // franja neón encima de algunos bloques
+  if (i % 3 === 0) { // franja neón HDR encima de algunos bloques: canal oscuro + núcleo bloom
+    const ch = new THREE.Mesh(new THREE.BoxGeometry(w * 0.88, 0.1, d * 0.88),
+      new THREE.MeshStandardMaterial({ color: 0x070b14, roughness: 0.4, metalness: 0.6 }));
+    ch.position.set(x, h - 0.01, z);
+    addSolid(ch, false);
     const glow = new THREE.Mesh(new THREE.BoxGeometry(w * 0.8, 0.06, d * 0.8),
-      new THREE.MeshBasicMaterial({ color: i % 2 ? 0xff4d5e : 0x54f0ff }));
-    glow.position.set(x, h + 0.04, z);
+      new THREE.MeshBasicMaterial({ color: neon(i % 2 ? 0xff4d5e : 0x54f0ff, 2.1) }));
+    glow.position.set(x, h + 0.05, z);
     scene.add(glow);
   }
 });
@@ -162,13 +417,24 @@ OBSTACLES.forEach(([x, z, w, h, d], i) => {
   const p = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.35, WALL_H + 1.5, 8), obMat);
   p.position.set(sx * (ARENA - 2), (WALL_H + 1.5) / 2, sz * (ARENA - 2));
   addSolid(p);
-  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffd166 }));
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 12),
+    new THREE.MeshBasicMaterial({ color: neon(0xffd166, 2.1) }));
   bulb.position.set(sx * (ARENA - 2), WALL_H + 1.7, sz * (ARENA - 2));
   scene.add(bulb);
   const pl = new THREE.PointLight(0xffd166, 30, 26, 2);
   pl.position.copy(bulb.position);
   scene.add(pl);
 });
+
+// rim lights: cian y magenta en esquinas opuestas, decay 2, sin sombras.
+// Altos y sobre la altura de muros: bañan de color los bordes sin quemar cerca.
+const rimCyan = new THREE.PointLight(0x2ad4ff, 95, 0, 2);
+rimCyan.castShadow = false;
+rimCyan.position.set(-ARENA + 6, 12, -ARENA + 6);
+const rimMagenta = new THREE.PointLight(0xff3bd8, 80, 0, 2);
+rimMagenta.castShadow = false;
+rimMagenta.position.set(ARENA - 6, 12, ARENA - 6);
+scene.add(rimCyan, rimMagenta);
 
 /* ============================================================ player */
 const EYE = 1.7;
@@ -195,7 +461,8 @@ const body = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.34), gunMat);
 body.position.set(0, -0.06, 0.05);
 const grip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.18, 0.09), gunMat);
 grip.position.set(0, -0.2, 0.14); grip.rotation.x = 0.3;
-const rail = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, 0.4), new THREE.MeshBasicMaterial({ color: 0x54f0ff }));
+const rail = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, 0.4),
+  new THREE.MeshBasicMaterial({ color: neon(0x54f0ff, 1.7) })); // riel HDR: línea de bloom
 rail.position.set(0, 0.045, -0.2);
 gun.add(barrel, body, grip, rail);
 gun.position.set(0.26, -0.22, -0.48);
@@ -209,7 +476,7 @@ function muzzleWorld(out) {
   return out;
 }
 
-// fogonazo: sprite + luz
+// fogonazo: sprite + luz (más grande y en HDR; el bloom lo estira)
 const flashCv = document.createElement('canvas');
 flashCv.width = flashCv.height = 64;
 const fc = flashCv.getContext('2d');
@@ -220,20 +487,29 @@ grad.addColorStop(1, 'rgba(255,120,30,0)');
 fc.fillStyle = grad; fc.fillRect(0, 0, 64, 64);
 const flashTex = new THREE.CanvasTexture(flashCv);
 const flash = new THREE.Sprite(new THREE.SpriteMaterial({
-  map: flashTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+  map: flashTex, color: neon(0xffffff, 2.6), blending: THREE.AdditiveBlending,
+  depthWrite: false, transparent: true }));
 flash.scale.setScalar(0.5); flash.visible = false;
 gun.add(flash); flash.position.copy(MUZZLE);
-const flashLight = new THREE.PointLight(0xffc36b, 0, 14, 2);
+const flashLight = new THREE.PointLight(0xffc36b, 0, 18, 2);
 flashLight.position.copy(MUZZLE);
 gun.add(flashLight);
 
-/* ============================================================ FX: tracers + partículas */
+/* ============================================================ FX: tracers + partículas + decals + luces de muerte */
+// temporales de módulo: cero allocations por frame en los hot loops
+const _pf = new THREE.Vector3(), _pr = new THREE.Vector3(), _pw = new THREE.Vector3();       // jugador
+const _eDir = new THREE.Vector3(), _eSep = new THREE.Vector3(),
+      _eTmp = new THREE.Vector3(), _eMove = new THREE.Vector3();                              // enemigos
+const _hitN = new THREE.Vector3(), _scrR = new THREE.Vector3(), _scrU = new THREE.Vector3();  // impactos
+const _nMat = new THREE.Matrix3();
+
 const tracerGeo = new THREE.BufferGeometry();
 const tracers = [];
 for (let i = 0; i < 40; i++) {
   const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
   const line = new THREE.Line(g, new THREE.LineBasicMaterial({
-    color: 0x9fe8ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+    color: neon(0x9fe8ff, 1.6), transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false }));
   line.frustumCulled = false;
   scene.add(line);
   tracers.push({ line, life: 0 });
@@ -258,18 +534,84 @@ for (let i = 0; i < P_MAX; i++) {
   scene.add(m);
   particles.push({ mesh: m, vel: new THREE.Vector3(), life: 0, max: 1 });
 }
-function burst(pos, color, n, speed = 7, scale = 1) {
+function burst(pos, color, n, speed = 7, scale = 1, hdr = 1) {
   let made = 0;
   for (const p of particles) {
     if (p.life > 0) continue;
     p.mesh.position.copy(pos);
     p.mesh.scale.setScalar(scale * rand(0.6, 1.4));
     p.mesh.visible = true;
-    p.mesh.material.color.set(color);
+    p.mesh.material.color.set(color).multiplyScalar(hdr);
     p.vel.set(rand(-1, 1), rand(-0.2, 1), rand(-1, 1)).normalize().multiplyScalar(rand(speed * 0.4, speed));
     p.life = p.max = rand(0.35, 0.8);
     if (++made >= n) break;
   }
+}
+
+/* decals de impacto: pool de 20 sprites con marca radial oscura dibujada en canvas
+   (barrillos de quemado arriba → material.rotation los orienta según la normal del hit).
+   Fade de 4 s. Reemplaza el más viejo si el pool está lleno. */
+const decalTex = canvasTex(64, (c, S) => {
+  const g = c.createRadialGradient(32, 32, 2, 32, 32, 30);
+  g.addColorStop(0, 'rgba(2,4,9,0.95)');
+  g.addColorStop(0.45, 'rgba(2,4,9,0.55)');
+  g.addColorStop(0.8, 'rgba(2,4,9,0.16)');
+  g.addColorStop(1, 'rgba(2,4,9,0)');
+  c.fillStyle = g; c.fillRect(0, 0, S, S);
+  for (let i = 0; i < 7; i++) { // lenguas de quemadura hacia el borde superior (v+)
+    c.fillStyle = `rgba(1,3,7,${rand(0.14, 0.3).toFixed(2)})`;
+    c.beginPath();
+    c.ellipse(32 + rand(-13, 13), rand(4, 20), rand(1.4, 3.4), rand(4, 11), rand(-0.3, 0.3), 0, 7);
+    c.fill();
+  }
+  for (let i = 0; i < 10; i++) { // salpicaduras dispersas
+    c.fillStyle = `rgba(2,4,9,${rand(0.1, 0.25).toFixed(2)})`;
+    c.beginPath(); c.arc(rand(6, 58), rand(6, 58), rand(0.6, 2.2), 0, 7); c.fill();
+  }
+});
+const decals = [];
+for (let i = 0; i < 20; i++) {
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: decalTex, transparent: true, opacity: 0, depthWrite: false }));
+  sp.visible = false;
+  sp.renderOrder = 1;
+  scene.add(sp);
+  decals.push({ sp, life: 0, max: 4 });
+}
+// point: punto de impacto (world); normal: normal de la cara (world)
+function spawnDecal(point, normal) {
+  const d = decals.find(d => d.life <= 0) || decals[0];
+  d.sp.position.copy(point).addScaledVector(normal, 0.045);
+  // orientar el barrillo a lo largo de la normal proyectada en el plano de pantalla
+  const e = camera.matrixWorld.elements;
+  _scrR.set(e[0], e[1], e[2]); _scrU.set(e[4], e[5], e[6]);
+  d.sp.material.rotation = Math.atan2(normal.dot(_scrR), normal.dot(_scrU));
+  const s = rand(0.36, 0.62);
+  d.sp.scale.set(s, s, 1);
+  d.life = d.max = 4;
+  d.sp.visible = true;
+  d.sp.material.opacity = 0.9;
+}
+function wallImpact(point, normal) {
+  burst(point, 0xffc884, 5, 4.5, 0.5, 1.8); // chispas calientes (HDR → bloom)
+  burst(point, 0x9fd8ff, 3, 3, 0.5);        // chispas frías
+  spawnDecal(point, normal);                // orificio oscuro temporal
+}
+
+/* pool de 4 PointLights para el flash de muerte de enemigos */
+const fxFlashes = [];
+for (let i = 0; i < 4; i++) {
+  const light = new THREE.PointLight(0xffffff, 0, 16, 2);
+  light.castShadow = false;
+  scene.add(light);
+  fxFlashes.push({ light, life: 0, max: 1, peak: 0 });
+}
+function popFxLight(pos, color, peak = 150, dur = 0.38) {
+  const f = fxFlashes.find(f => f.life <= 0) || fxFlashes[0];
+  f.light.position.set(pos.x, pos.y + 0.5, pos.z);
+  f.light.color.set(color);
+  f.peak = peak; f.life = f.max = dur;
+  f.light.intensity = peak;
 }
 
 /* ============================================================ enemies */
@@ -287,6 +629,24 @@ const headGeo = new THREE.SphereGeometry(0.3, 12, 10);
 const eyeGeo = new THREE.SphereGeometry(0.06, 8, 6);
 const ringGeo = new THREE.TorusGeometry(0.5, 0.045, 8, 24);
 const hitGeo = new THREE.BoxGeometry(1.15, 1.9, 1.15);
+const coreGeo = new THREE.SphereGeometry(0.285, 12, 8);   // núcleo emisivo interno (cuello)
+const antGeo = new THREE.CylinderGeometry(0.012, 0.022, 0.36, 5);
+const tipGeo = new THREE.SphereGeometry(0.05, 6, 5);
+
+// materiales emisivos compartidos por tipo (los Basic no tienen estado por enemigo:
+// el parpadeo se hace con visible, el pulso con scale → se pueden cachear)
+const enemyMatCache = {};
+function enemyMats(type) {
+  if (!enemyMatCache[type]) {
+    const C = ENEMY_TYPES[type].color;
+    enemyMatCache[type] = {
+      glow: new THREE.MeshBasicMaterial({ color: neon(C, 1.9) }),  // ojos y anillo
+      core: new THREE.MeshBasicMaterial({ color: neon(C, 2.6) }),  // núcleo interno
+      tip:  new THREE.MeshBasicMaterial({ color: neon(C, 3.2) }),  // punta antena (bloom fuerte)
+    };
+  }
+  return enemyMatCache[type];
+}
 
 class Enemy {
   constructor(type, pos) {
@@ -297,17 +657,25 @@ class Enemy {
     this.hitCd = 0; this.phase = rand(0, 6.28); this.spawnT = 0;
 
     const bMat = new THREE.MeshStandardMaterial({ color: 0x1a2233, roughness: 0.5, metalness: 0.6,
-      emissive: T.color, emissiveIntensity: 0.12 });
-    const glowMat = new THREE.MeshBasicMaterial({ color: T.color });
+      emissive: T.color, emissiveIntensity: 0.12, envMapIntensity: 0.4 });
+    const M = enemyMats(type);
     this.mats = [bMat];
     this.g = new THREE.Group();
     const body = new THREE.Mesh(bodyGeo, bMat);
     const head = new THREE.Mesh(headGeo, bMat.clone()); this.mats.push(head.material);
     head.position.y = 0.85;
-    const eyeL = new THREE.Mesh(eyeGeo, glowMat); eyeL.position.set(-0.11, 0.9, -0.26);
-    const eyeR = new THREE.Mesh(eyeGeo, glowMat); eyeR.position.set(0.11, 0.9, -0.26);
-    const ring = new THREE.Mesh(ringGeo, glowMat); ring.rotation.x = Math.PI / 2; ring.position.y = -0.35;
-    this.g.add(body, head, eyeL, eyeR, ring);
+    const eyeL = new THREE.Mesh(eyeGeo, M.glow); eyeL.position.set(-0.11, 0.9, -0.26);
+    const eyeR = new THREE.Mesh(eyeGeo, M.glow); eyeR.position.set(0.11, 0.9, -0.26);
+    const ring = new THREE.Mesh(ringGeo, M.glow); ring.rotation.x = Math.PI / 2; ring.position.y = -0.35;
+    // núcleo emisivo asomando por la unión cuerpo/cabeza (roce en y≈0.68)
+    this.core = new THREE.Mesh(coreGeo, M.core);
+    this.core.position.y = 0.68;
+    // antena con puntito que parpadea
+    const ant = new THREE.Mesh(antGeo, bMat);
+    ant.position.y = 1.31;
+    this.tip = new THREE.Mesh(tipGeo, M.tip);
+    this.tip.position.y = 1.52;
+    this.g.add(body, head, eyeL, eyeR, ring, this.core, ant, this.tip);
     this.g.scale.setScalar(0.01);
     this.baseY = (0.95 + T.scale * 0.25) * T.scale;
 
@@ -326,14 +694,15 @@ class Enemy {
   takeDamage(d, point) {
     this.hp -= d;
     this.flash();
-    burst(point, this.T.color, 4, 4, 0.6);
+    burst(point, this.T.color, 4, 4, 0.6, 1.6);
     if (this.hp <= 0) this.die();
   }
   die() {
     Sfx.kill();
     game.score += this.T.score; game.kills++;
     feed(`+${this.T.score} ${this.type.toUpperCase()}`);
-    burst(this.g.position, this.T.color, 22, 9, 1.2);
+    burst(this.g.position, this.T.color, 22, 9, 1.2, 1.7);
+    popFxLight(this.g.position, this.T.color, 150, 0.38); // flash momentáneo desde el pool
     if (Math.random() < this.T.drop) spawnMedkit(this.g.position);
     this.remove();
   }
@@ -352,23 +721,30 @@ class Enemy {
     for (const m of this.mats)
       m.emissiveIntensity = Math.max(0.12, m.emissiveIntensity - dt * 5);
 
+    // núcleo: pulso emisivo sutil (escala, sin alloc)
+    this.core.scale.setScalar(1 + Math.sin(t * 4.2 + this.phase) * 0.07);
+    // antena: puntito que parpadea por toggle de tiempo, desfasado por enemigo
+    this.tip.visible = ((t + this.phase * 2.6) % 0.8) < 0.46;
+
     const p = this.g.position;
-    const dir = new THREE.Vector3(player.pos.x - p.x, 0, player.pos.z - p.z);
-    const dist = dir.length();
-    if (dist > 0.001) dir.normalize();
+    _eDir.set(player.pos.x - p.x, 0, player.pos.z - p.z);
+    const dist = _eDir.length();
+    if (dist > 0.001) _eDir.normalize();
 
     // separación entre enemigos
-    const sep = new THREE.Vector3();
+    _eSep.set(0, 0, 0);
     for (const o of enemies) {
       if (o === this) continue;
       const d = p.distanceTo(o.g.position);
       const r = 1.5 * (T.scale + o.T.scale) * 0.5;
-      if (d < r && d > 0.001) sep.addScaledVector(
-        new THREE.Vector3(p.x - o.g.position.x, 0, p.z - o.g.position.z).normalize(), (r - d) / r * 4);
+      if (d < r && d > 0.001) {
+        _eTmp.set(p.x - o.g.position.x, 0, p.z - o.g.position.z).normalize();
+        _eSep.addScaledVector(_eTmp, (r - d) / r * 4);
+      }
     }
 
-    const move = dir.multiplyScalar(this.speed).add(sep);
-    p.x += move.x * dt; p.z += move.z * dt;
+    _eMove.copy(_eDir).multiplyScalar(this.speed).add(_eSep);
+    p.x += _eMove.x * dt; p.z += _eMove.z * dt;
     p.x = clamp(p.x, -ARENA + 1.2, ARENA - 1.2);
     p.z = clamp(p.z, -ARENA + 1.2, ARENA - 1.2);
     pushOutOfBoxes(p, 0.55 * T.scale);
@@ -389,8 +765,8 @@ class Enemy {
 function spawnMedkit(pos) {
   const g = new THREE.Group();
   const box = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.38, 0.38),
-    new THREE.MeshStandardMaterial({ color: 0x0e6b4a, emissive: 0x0ee6a0, emissiveIntensity: 0.5 }));
-  const cm = new THREE.MeshBasicMaterial({ color: 0xd6ffe9 });
+    new THREE.MeshStandardMaterial({ color: 0x0e6b4a, emissive: 0x0ee6a0, emissiveIntensity: 1.3 }));
+  const cm = new THREE.MeshBasicMaterial({ color: neon(0xd6ffe9, 1.8) }); // cruz HDR
   const c1 = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.06, 0.4), cm);
   const c2 = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.24, 0.4), cm);
   c1.position.z = 0.005; c2.position.z = 0.005;
@@ -566,7 +942,8 @@ $('dead').addEventListener('click', () => { resetGame(); startWave(1); lockAndPl
 /* ============================================================ shooting */
 const raycaster = new THREE.Raycaster();
 raycaster.far = 150;
-const _mv = new THREE.Vector3(), _dir = new THREE.Vector3(), _end = new THREE.Vector3();
+const _mv = new THREE.Vector3(), _dir = new THREE.Vector3(), _end = new THREE.Vector3(),
+      _origin = new THREE.Vector3();
 
 function tryReload() {
   if (game.state !== 'play' || player.reloading > 0 || player.mag >= player.magSize) return;
@@ -590,8 +967,9 @@ function shoot(dt) {
   _dir.x += rand(-spread, spread); _dir.y += rand(-spread, spread); _dir.z += rand(-spread, spread);
   _dir.normalize();
 
-  const origin = camera.getWorldPosition(new THREE.Vector3());
-  raycaster.set(origin, _dir);
+  camera.getWorldPosition(_origin);
+  raycaster.set(_origin, _dir);
+  _nMat.getNormalMatrix(camera.matrixWorld); // para pasar normales de hit a world
   const hitsEnemy = raycaster.intersectObjects(enemyHitboxes, false);
   const hitsWorld = raycaster.intersectObjects(solids, false);
   const eHit = hitsEnemy[0], wHit = hitsWorld[0];
@@ -607,9 +985,10 @@ function shoot(dt) {
     }
   } else if (wHit) {
     end = wHit.point;
-    burst(wHit.point, 0x9fd8ff, 3, 3, 0.5);
+    _hitN.copy(wHit.normal).applyMatrix3(_nMat).normalize(); // normal object -> world
+    wallImpact(wHit.point, _hitN);
   } else {
-    end = _end.copy(origin).addScaledVector(_dir, 120);
+    end = _end.copy(_origin).addScaledVector(_dir, 120);
   }
 
   muzzleWorld(_mv);
@@ -617,8 +996,9 @@ function shoot(dt) {
 
   // feedback visual del disparo
   flash.visible = true; flashT = 0.045;
-  flashLight.intensity = 26;
+  flashLight.intensity = 46;
   flash.rotation.z = rand(0, 6.28);
+  flash.scale.setScalar(0.8 + player.heat * 0.45); // fogonazo grande: el bloom lo come
   gun.position.z += 0.09;               // retroceso del modelo
   player.recoilPitch += 0.012 + player.heat * 0.008;
   updateHud();
@@ -633,10 +1013,10 @@ function update(dt) {
   game.time += dt;
   const t = game.time;
 
-  /* --- movimiento del jugador */
-  const f = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
-  const r = new THREE.Vector3(-f.z, 0, f.x);
-  const wish = new THREE.Vector3();
+  /* --- movimiento del jugador (temps de módulo: sin alloc por frame) */
+  const f = _pf.set(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const r = _pr.set(-f.z, 0, f.x);
+  const wish = _pw.set(0, 0, 0);
   if (keys['KeyW']) wish.add(f);
   if (keys['KeyS']) wish.sub(f);
   if (keys['KeyD']) wish.add(r);
@@ -688,7 +1068,6 @@ function update(dt) {
 
   if (flashT > 0) { flashT -= dt; if (flashT <= 0) flash.visible = false; }
   flashLight.intensity = Math.max(0, flashLight.intensity - dt * 400);
-  flash.scale.setScalar(0.4 + player.heat * 0.25);
 
   /* --- disparo / recarga */
   player.heat = Math.max(0, player.heat - dt * 1.4);
@@ -776,11 +1155,44 @@ function update(dt) {
 }
 
 /* ============================================================ loop */
+// FX ambientales: corren siempre (menú/pausa incluidos), cero alloc por frame
+function updateWorldFx(dt, t) {
+  // titilación global sutil de las estrellas (dos senos desfasados)
+  starMat.opacity = 0.82 + Math.sin(t * 0.9) * 0.07 + Math.sin(t * 2.7 + 1.3) * 0.05;
+
+  // decaimiento de los flashes de muerte (pool de luces)
+  for (const f of fxFlashes) {
+    if (f.life <= 0) continue;
+    f.life -= dt;
+    if (f.life <= 0) { f.light.intensity = 0; continue; }
+    const k = f.life / f.max;
+    f.light.intensity = f.peak * k * k;
+  }
+
+  // fade de decals (4 s, curva suave al final)
+  for (const d of decals) {
+    if (d.life <= 0) continue;
+    d.life -= dt;
+    if (d.life <= 0) { d.sp.visible = false; d.sp.material.opacity = 0; continue; }
+    d.sp.material.opacity = 0.9 * Math.pow(d.life / d.max, 0.7);
+  }
+}
+
+const fpsEl = $('fps');
+let fpsN = 0, fpsLast = performance.now();
+
 function loop() {
   requestAnimationFrame(loop);
   const dt = Math.min(clock.getDelta(), 0.05);
   if (game.state === 'play') update(dt);
-  renderer.render(scene, camera);
+  updateWorldFx(dt, clock.elapsedTime);
+  composer.render();
+  fpsN++;
+  const now = performance.now();
+  if (now - fpsLast >= 1000) { // FPS discreto, 1 actualización por segundo
+    fpsEl.textContent = `${Math.round(fpsN * 1000 / (now - fpsLast))} FPS`;
+    fpsN = 0; fpsLast = now;
+  }
 }
 camera.position.copy(player.pos);
 camera.rotation.order = 'YXZ';

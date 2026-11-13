@@ -17,7 +17,14 @@
     z-index:30; cursor:pointer; }
   .overlay.hidden { display:none; }
   .title { font-size:min(9vw,64px); letter-spacing:.18em; color:#54f0ff;
-    text-shadow:0 0 18px rgba(84,240,255,.55), 0 0 60px rgba(84,240,255,.25); }
+    text-shadow:0 0 18px rgba(84,240,255,.55), 0 0 60px rgba(84,240,255,.25);
+    position:relative; }
+  /* scanlines sutiles sobre el título (CRT barato, opacidad baja) */
+  .title::after { content:''; position:absolute; inset:-4px -10px; pointer-events:none;
+    background:repeating-linear-gradient(180deg,
+      rgba(2,8,16,.55) 0px, rgba(2,8,16,.55) 1px,
+      rgba(2,8,16,0) 1px, rgba(2,8,16,0) 3px);
+    opacity:.35; }
   .title .red { color:#ff4d5e; text-shadow:0 0 18px rgba(255,77,94,.55); }
   .subtitle { color:#7fa8c9; letter-spacing:.3em; font-size:13px; }
   .controls { line-height:1.9; color:#9fc6e8; font-size:15px; }
@@ -84,6 +91,11 @@
     font-size:13px; letter-spacing:.12em; line-height:1.7; }
   #killfeed div { color:#8dfaff; opacity:.9; }
   #killfeed div.dying { transition:opacity 1s; opacity:0; }
+
+  /* FPS discreto (fuera del HUD: siempre visible, sin interferir) */
+  #fps { position:fixed; top:18px; left:26px; z-index:26; pointer-events:none;
+    font-size:12px; letter-spacing:.2em; color:#7fa8c9; opacity:.65;
+    text-shadow:0 0 8px rgba(84,240,255,.25); }
 </style>
 </head>
 <body>
@@ -108,6 +120,7 @@
   </div>
 </div>
 <div id="dmg"></div>
+<div id="fps">-- FPS</div>
 
 <div id="menu" class="overlay">
   <div class="title">MORIS <span class="red">//</span> ARENA</div>
