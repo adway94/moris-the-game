@@ -2381,6 +2381,21 @@ function beginLevel(n) {
 function campaignStart(level, snap) {
   Sfx.init();
   resetGame(); // arsenal/recursos a cero (el retry re-encima lo del save)
+  // QA: ?level=N salta prologo/terminal y siembra el arsenal de ese sector
+  // (combinar con ?weapons=all). No cambia el flujo normal sin la query.
+  const qaLevel = +(new URLSearchParams(location.search).get('level') || 0);
+  if (qaLevel >= 1 && qaLevel <= LEVELS.length) {
+    level = qaLevel;
+    if (ALL_WEAPONS) for (const id of Object.keys(WEAPONS)) {
+      unlockWeapon(id, 999);
+      const W = WEAPONS[id];
+      if (W.magSize > 0) player.mags[id] = W.magSize;
+    }
+    beginLevel(level);
+    game.state = 'play';
+    dispatchEvent(new CustomEvent('gamestate', { detail: 'play' }));
+    return;
+  }
   if (snap) {
     player.owned = new Set(snap.owned);
     player.mags = {};
