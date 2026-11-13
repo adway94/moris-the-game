@@ -603,7 +603,7 @@ const PICKUPS = {
 const startResources = () => ({
   hp: 100, armor: 0,
   mags: { rifle: 30 },
-  pools: { balas: 120, cartuchos: 0, celulas: 0, cohetes: 0, argents: 0 },
+  pools: { balas: { n: 120 }, cartuchos: { n: 0 }, celulas: { n: 0 }, cohetes: { n: 0 }, argents: { n: 0 } },
 });
 
 /* ============================================================ player */
@@ -1992,6 +1992,7 @@ window.__dbg = () => ({ state: game.state, wave: game.wave, en: enemies.length,
   armor: Math.round(player.armor), // E3: recursos
   pools: Object.fromEntries(Object.entries(player.pools).map(([k, v]) => [k, v.n])),
   mag: curMag(), weapon: player.weaponId, pickups: pickups.length,
+  pk: pickups.map(p => [Math.round(p.mesh.position.x), Math.round(p.mesh.position.z)]), // test E3
   inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn, retro: retroOn,
   spriteMode: true, // E2: enemigos = sprite billboard (constante: no hay fallback 3D)
   touchMode: TOUCH_MODE, firing, gamepad: gp.connected,
