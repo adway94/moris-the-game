@@ -2,12 +2,13 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>MORIS // ARENA SHOOTER</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { width:100%; height:100%; overflow:hidden; background:#04060c;
-    font-family:'Courier New', ui-monospace, monospace; color:#cfe9ff; }
+    font-family:'Courier New', ui-monospace, monospace; color:#cfe9ff;
+    touch-action:none; overscroll-behavior:none; }  /* táctil: sin scroll / pull-to-refresh */
   canvas { display:block; }
 
   /* ---------- overlays ---------- */
@@ -96,6 +97,62 @@
   #fps { position:fixed; top:18px; left:26px; z-index:26; pointer-events:none;
     font-size:12px; letter-spacing:.2em; color:#7fa8c9; opacity:.65;
     text-shadow:0 0 8px rgba(84,240,255,.25); }
+
+  /* ---------- controles táctiles (display:none: game.js agrega .on solo si es táctil) ----------
+     El overlay no tapa nada (pointer-events:none); solo los botones y el joystick capturan.
+     Botones con margen respecto al borde para que el pulgar descanse cómodo y el arrastre
+     desde adentro del botón no se confunda con el arrastre de mira de la pantalla. */
+  #touchhud { position:fixed; inset:0; z-index:27; pointer-events:none; display:none; }
+  #touchhud.on { display:block; }
+  #touchhud.on.hidden { display:none; } /* menú/pausa/muerte: oculto aún con .on */
+
+  /* joystick dinámico: la base fantasma aparece donde pisa el dedo (game.js mueve el transform) */
+  #stick { position:absolute; left:0; top:0; width:116px; height:116px; margin:-58px 0 0 -58px;
+    border-radius:50%; border:2px solid rgba(84,240,255,.45); opacity:0;
+    background:radial-gradient(circle at 50% 50%, rgba(84,240,255,.04), rgba(84,240,255,.13));
+    box-shadow:0 0 20px rgba(84,240,255,.25), inset 0 0 22px rgba(84,240,255,.14);
+    transition:opacity .12s; }
+  #stick i { position:absolute; left:50%; top:50%; width:52px; height:52px; margin:-26px 0 0 -26px;
+    border-radius:50%; background:rgba(84,240,255,.18); border:2px solid rgba(141,250,255,.85);
+    box-shadow:0 0 16px rgba(84,240,255,.6); }
+  #stick.active { opacity:1; }
+
+  .tbtn { position:absolute; pointer-events:auto; touch-action:none; cursor:pointer;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+    -webkit-tap-highlight-color:transparent; display:flex; align-items:center; justify-content:center;
+    padding:0; font-family:inherit; font-size:12px; letter-spacing:.06em; color:#cffcff;
+    white-space:nowrap;
+    border:2px solid rgba(84,240,255,.6); border-radius:50%;
+    background:radial-gradient(circle at 38% 30%, rgba(84,240,255,.17), rgba(6,12,22,.55) 72%);
+    box-shadow:0 0 16px rgba(84,240,255,.3), inset 0 0 14px rgba(84,240,255,.12);
+    transition:transform .05s; }
+  .tbtn.pressed { transform:scale(.93); color:#eaffff; border-color:#8dfaff;
+    background:radial-gradient(circle at 38% 30%, rgba(84,240,255,.45), rgba(10,24,38,.6) 72%);
+    box-shadow:0 0 30px rgba(84,240,255,.65), inset 0 0 22px rgba(84,240,255,.35); }
+  #tfire { width:110px; height:110px; font-size:18px;
+    right:calc(26px + env(safe-area-inset-right, 0px)); bottom:calc(26px + env(safe-area-inset-bottom, 0px)); }
+  #treload { width:64px; height:64px; font-size:11px; letter-spacing:0;
+    right:calc(26px + env(safe-area-inset-right, 0px) + 110px + 26px); bottom:calc(49px + env(safe-area-inset-bottom, 0px)); }
+  #tjump { width:64px; height:64px;
+    right:calc(49px + env(safe-area-inset-right, 0px)); bottom:calc(162px + env(safe-area-inset-bottom, 0px)); }
+
+  /* Con FIRE abajo a la derecha el HUD se reubica: munición arriba a la derecha (el botón
+     la taparía) por debajo de la topbar, y el killfeed desciende para no pisarla.
+     La topbar se achica para que entre completa en un phone de 360 px de ancho. */
+  body.touch #topbar { gap:15px; font-size:12px; }
+  body.touch #topbar b { font-size:15px; }
+  body.touch #ammowrap { top:50px; right:16px; bottom:auto; }
+  body.touch #killfeed { top:126px; }
+
+  /* phones en horizontal: overlays compactos para que menú/muerte no se corten */
+  @media (max-height:520px) {
+    .overlay { gap:10px; }
+    .title { font-size:min(7vh,34px); }
+    .controls { font-size:12px; line-height:1.55; }
+    .cta { font-size:13px; padding:9px 20px; margin-top:2px; }
+    .subtitle, .stat-line { font-size:11px; }
+    .stat-big { font-size:26px; }
+  }
 </style>
 </head>
 <body>
@@ -122,16 +179,31 @@
 <div id="dmg"></div>
 <div id="fps">-- FPS</div>
 
+<!-- HUD táctil: visible solo en modo táctil (.on lo agrega game.js). Los eventos de estos
+     elementos nunca llegan al canvas (el toque "nace" en el botón), por eso el arrastre
+     sobre FIRE no rota la cámara. -->
+<div id="touchhud">
+  <div id="stick"><i></i></div>
+  <button id="tjump" class="tbtn" type="button" aria-label="Saltar">SALTAR</button>
+  <button id="treload" class="tbtn" type="button" aria-label="Recargar">RECARGAR</button>
+  <button id="tfire" class="tbtn" type="button" aria-label="Disparar">FIRE</button>
+</div>
+
 <div id="menu" class="overlay">
   <div class="title">MORIS <span class="red">//</span> ARENA</div>
   <div class="subtitle">WAVE SHOOTER — three.js — 100% local</div>
-  <div class="controls">
+  <div class="controls" id="controlsDesktop">
     <b>WASD</b> moverse &nbsp;·&nbsp; <b>MOUSE</b> apuntar &nbsp;·&nbsp; <b>CLIC IZQ</b> disparar<br>
     <b>SHIFT</b> sprint &nbsp;·&nbsp; <b>ESPACIO</b> saltar &nbsp;·&nbsp; <b>R</b> recargar &nbsp;·&nbsp; <b>ESC</b> pausa<br>
     Sobreviví a las oleadas. Los tanques naranjas sueltan botiquines <b>+</b>.
   </div>
+  <div class="controls" id="controlsTouch" style="display:none">
+    <b>JOYSTICK</b> (tercio izquierdo) moverse · fondo = <b>SPRINT</b><br>
+    <b>ARRASTRÁ</b> en el resto de la pantalla para apuntar<br>
+    <b>FIRE</b> disparar (mantené) · <b>RECARGAR</b> · <b>SALTAR</b> · sobreviví a las oleadas
+  </div>
   <div class="cta" id="startbtn">CLIC PARA JUGAR</div>
-  <div class="stat-line">Recomendado: PC con mouse. Mejor score: <span class="best" id="bestmenu">0</span></div>
+  <div class="stat-line"><span id="rec">Recomendado: PC con mouse.</span> Mejor score: <span class="best" id="bestmenu">0</span></div>
 </div>
 
 <div id="pause" class="overlay hidden">

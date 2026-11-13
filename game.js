@@ -76,10 +76,20 @@ const Sfx = {
   death()  { this.tone('sawtooth', 300, 30, 1.1, 0.3); this.noise(0.8, 0.25, 220, 0.5); },
 };
 
+/* ============================================================ modo táctil
+   Se activa con dedo real (ontouchstart / pointer:coarse) o forzando ?touch=1 para probar
+   en desktop. Debe definirse ANTES del renderer: en táctil el pixel ratio se capa a 1.5
+   (las GPUs móviles se ahogan con el bloom a HiDPI); el auto-degrade de bloom sigue igual. */
+const TOUCH_MODE = 'ontouchstart' in window ||
+  (window.matchMedia && matchMedia('(pointer: coarse)').matches) ||
+  new URLSearchParams(location.search).get('touch') === '1';
+const MAX_DPR = TOUCH_MODE ? 1.5 : 2;
+const maxDpr = () => Math.min(devicePixelRatio, MAX_DPR);
+
 /* ============================================================ renderer / scene */
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(maxDpr());
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -200,8 +210,8 @@ composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 // normaliza tamaños: con RT custom el composer inicializa _width al tamaño efectivo
 // (ya multiplicada por pixelRatio) y addPass volvería a escalarla en pantallas HiDPI.
-// pixelRatio idéntico al del renderer (dpr cap 2) para que los buffers coincidan.
-composer.setPixelRatio(Math.min(devicePixelRatio, 2));
+// pixelRatio idéntico al del renderer (dpr cap MAX_DPR) para que los buffers coincidan.
+composer.setPixelRatio(maxDpr());
 composer.setSize(innerWidth, innerHeight);
 
 /* bloom on/off: off saltea el composer y va directo por renderer.render (en screen el
@@ -212,7 +222,7 @@ function setBloom(on) { bloomOn = on; }
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
-  const pr = Math.min(devicePixelRatio, 2); // mismo cap de dpr para renderer y composer
+  const pr = maxDpr(); // mismo cap de dpr para renderer y composer
   renderer.setPixelRatio(pr);
   renderer.setSize(innerWidth, innerHeight);
   composer.setPixelRatio(pr); // re-escala con _width/_height actuales (CSS px)
@@ -469,8 +479,12 @@ const player = {
   recoilPitch: 0, roll: 0,
   fireCd: 0, heat: 0,
   mag: 30, magSize: 30, reloading: 0,
+  jumpQueued: false,             // tap JUMP táctil (el espacio de desktop sigue usando keys)
 };
 const GRAVITY = 24, SPEED = 6.4, SPRINT = 1.55, JUMP_V = 8;
+// cámara suavizada: en desktop copia yaw/pitch 1:1; en táctil los sigue con un low-pass
+// para que el arrastre del dedo no se sienta a saltos (ver update)
+let viewYaw = 0, viewPitch = 0;
 
 /* ============================================================ weapon viewmodel */
 const gun = new THREE.Group();
@@ -868,7 +882,9 @@ function resetGame() {
   Object.assign(player, {
     hp: 100, yaw: 0, pitch: 0, mag: 30, reloading: 0,
     recoilPitch: 0, heat: 0, fireCd: 0, lastHitT: -99, sprintCd: 0, sprintT: 0,
+    jumpQueued: false,
   });
+  viewYaw = viewPitch = 0; // sin barrido de cámara al reaparecer
   player.pos.set(0, EYE, 28);
   player.vel.set(0, 0, 0);
   Object.assign(game, { score: 0, kills: 0, wave: 0, spawnQueue: [], intermission: 1.2, time: 0 });
@@ -893,12 +909,14 @@ function die() {
   game.state = 'dead';
   Sfx.death();
   document.exitPointerLock();
+  dispatchEvent(new CustomEvent('gamestate', { detail: game.state })); // suelta input táctil
   if (game.score > best) { best = game.score; localStorage.setItem('moris-shooter-best', best); }
   $('finalscore').textContent = game.score;
   $('finalwave').textContent = game.wave;
   $('finalkills').textContent = game.kills;
   $('bestdead').textContent = best; $('bestmenu').textContent = best;
   $('hud').classList.add('hidden');
+  $('touchhud').classList.add('hidden');
   $('dead').classList.remove('hidden');
 }
 
@@ -924,6 +942,9 @@ function updateHud() {
 const keys = {};
 let firing = false;
 
+// disparo continuo compartido desktop/táctil (auto-fire por cadencia en update)
+function toggleFiring(on) { firing = on; }
+
 addEventListener('keydown', e => {
   keys[e.code] = true;
   if (e.code === 'KeyR') tryReload();
@@ -931,8 +952,11 @@ addEventListener('keydown', e => {
   if (e.code === 'Space') e.preventDefault();
 });
 addEventListener('keyup', e => keys[e.code] = false);
-addEventListener('mousedown', e => { if (e.button === 0 && game.state === 'play') firing = true; });
-addEventListener('mouseup', e => { if (e.button === 0) firing = false; });
+addEventListener('mousedown', e => {
+  if (TOUCH_MODE || e.button !== 0 || game.state !== 'play') return;
+  toggleFiring(true);
+});
+addEventListener('mouseup', e => { if (!TOUCH_MODE && e.button === 0) toggleFiring(false); });
 addEventListener('mousemove', e => {
   if (document.pointerLockElement !== renderer.domElement) return;
   player.yaw -= e.movementX * 0.0023;
@@ -942,23 +966,173 @@ addEventListener('mousemove', e => {
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement !== renderer.domElement && game.state === 'play') {
     game.state = 'pause';
-    firing = false;
+    toggleFiring(false);
+    $('hud').classList.add('hidden');
     $('pause').classList.remove('hidden');
   }
 });
 
+// En táctil NUNCA se pide pointer lock (ni start, ni retry, ni resume): la mira se mueve
+// con arrastre (sección touch). En desktop es idéntico a antes.
 function lockAndPlay() {
   Sfx.init();
-  renderer.domElement.requestPointerLock();
+  if (!TOUCH_MODE) renderer.domElement.requestPointerLock();
   $('menu').classList.add('hidden');
   $('pause').classList.add('hidden');
   $('dead').classList.add('hidden');
   $('hud').classList.remove('hidden');
+  $('touchhud').classList.remove('hidden');
   game.state = 'play';
 }
-$('menu').addEventListener('click', () => { resetGame(); startWave(1); lockAndPlay(); });
-$('pause').addEventListener('click', () => lockAndPlay());
-$('dead').addEventListener('click', () => { resetGame(); startWave(1); lockAndPlay(); });
+
+// tap-to-start: en táctil responde al touchstart (el click sintético posterior se ignora
+// ~500 ms para no disparar dos veces); en desktop solo click, como siempre.
+function onTapStart(el, fn) {
+  let lastTouchAt = -1e9;
+  el.addEventListener('touchstart', e => {
+    e.preventDefault(); // mata el click sintético y el scroll del overlay
+    lastTouchAt = performance.now();
+    fn();
+  }, { passive: false });
+  el.addEventListener('click', () => {
+    if (performance.now() - lastTouchAt < 500) return;
+    fn();
+  });
+}
+const playFromMenu = () => { resetGame(); startWave(1); lockAndPlay(); };
+onTapStart($('menu'), playFromMenu);
+onTapStart($('pause'), () => lockAndPlay());
+onTapStart($('dead'), playFromMenu);
+
+/* scope de módulo (no dentro del if): update() lo lee siempre; en desktop queda todo en 0 */
+const touch = {
+  stickId: -1, baseX: 0, baseY: 0,        // id del dedo y base dinámica (px de pantalla)
+  mag: 0, wishF: 0, wishR: 0,             // empuje 0..1 y componentes del wish (-1..1)
+  lookId: -1, lookX: 0, lookY: 0,         // look: id y último punto procesado (px)
+};
+
+/* ============================================================ touch controls (móvil)
+   Un solo sistema de Pointer Events: pointerdown en el tercio izquierdo de la pantalla
+   → joystick dinámico (base fantasma donde pisa el dedo); en el resto del canvas → look;
+   FIRE/RECARGAR/SALTAR son botones DOM con pointer-events:auto — el puntero "nace" en el
+   botón y queda capturado implícitamente ahí, así que sus eventos jamás llegan al canvas:
+   arrastrar sobre FIRE dispara pero NUNCA rota la cámara (para apuntar, otro dedo afuera).
+   Pointer Events unifican dedo y mouse: con ?touch=1 se puede probar en desktop con mouse.
+   En táctil no se usa mousedown/mousemove (pointer lock off), así que no hay dobles rutas. */
+if (TOUCH_MODE) {
+  const STICK_R = 52;        // radio del joystick en px CSS
+  const LOOK_SENS = 0.0045;  // rad/px (desktop 0.0023: el dedo recorre mucho menos que la mouse)
+  const cv = renderer.domElement;
+  const stickEl = $('stick'), thumbEl = stickEl.firstElementChild;
+  const tfire = $('tfire'), treload = $('treload'), tjump = $('tjump');
+
+  // .on habilita el overlay (vence el display:none del CSS); .hidden lo mantiene oculto
+  // hasta entrar en play (lockAndPlay lo quita, die lo devuelve): en el menú no se ve nada.
+  $('touchhud').classList.add('on', 'hidden');
+  document.body.classList.add('touch'); // hooks de layout táctil en CSS (HUD, overlays)
+  $('controlsDesktop').style.display = 'none';
+  $('controlsTouch').style.display = '';
+  $('rec').textContent = 'Modo táctil activo.';
+  document.querySelectorAll('.cta').forEach(el => el.textContent = el.textContent.replace('CLIC', 'TOCA'));
+
+  const setPressed = (el, on) => el.classList.toggle('pressed', on);
+  let fireId = -1;
+  // limpia todo el input táctil (fin de partida / pausa): nadie queda "apretado"
+  const dropTouch = () => {
+    touch.stickId = touch.lookId = fireId = -1;
+    touch.mag = 0; touch.wishF = touch.wishR = 0;
+    player.jumpQueued = false;
+    setPressed(tfire, false); setPressed(treload, false); setPressed(tjump, false);
+    stickEl.classList.remove('active');
+    thumbEl.style.transform = '';
+    if (firing) toggleFiring(false);
+  };
+  addEventListener('gamestate', e => { if (e.detail !== 'play') dropTouch(); });
+
+  /* ---- joystick: empuje normalizado alimenta el wish vector (mismo accel/sprint que WASD;
+          fondo del recorrido > 0.92 dispara el sprint con el cooldown ya existente) ---- */
+  const drawStick = (dx, dy) => {
+    thumbEl.style.transform = `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)`;
+  };
+  const startStick = e => {
+    touch.stickId = e.pointerId;
+    touch.baseX = e.clientX; touch.baseY = e.clientY;
+    touch.mag = 0; touch.wishF = touch.wishR = 0; // dedo quieto = cero empuje → cero giro de cámara
+    drawStick(0, 0);
+    stickEl.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+    stickEl.classList.add('active');
+  };
+  const moveStick = e => {
+    let dx = e.clientX - touch.baseX, dy = e.clientY - touch.baseY;
+    const len = Math.hypot(dx, dy);
+    const m = Math.min(len / STICK_R, 1);
+    if (len > 1e-3) { dx /= len; dy /= len; } // dirección unitaria (0,0 con len≈0)
+    touch.mag = m;
+    touch.wishF = -dy * m;   // arrastrar arriba = adelante
+    touch.wishR = dx * m;    // arrastrar derecha = strafe derecha
+    drawStick(dx * m * STICK_R, dy * m * STICK_R);
+  };
+
+  /* ---- look: delta del arrastre → yaw/pitch (yaw -dx equivale a movementX de desktop:
+          arrastrar der/arriba mira der/arriba, sin inversión). LookId único: otros dedos
+          no registrados se ignoran para que no giren la cámara al pulsar botones. ---- */
+  const startLook = e => {
+    touch.lookId = e.pointerId;
+    touch.lookX = e.clientX; touch.lookY = e.clientY;
+  };
+  const moveLook = e => {
+    // eventos coalescidos: el navegador los entrega una vez por frame; aplicando solo el
+    // último punto se conserva el delta total sin saltos (el low-pass de la cámara termina de alisar)
+    const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
+    const p = (evs && evs.length) ? evs[evs.length - 1] : e;
+    player.yaw -= (p.clientX - touch.lookX) * LOOK_SENS;
+    player.pitch = clamp(player.pitch - (p.clientY - touch.lookY) * LOOK_SENS, -1.5, 1.5);
+    touch.lookX = p.clientX; touch.lookY = p.clientY;
+  };
+
+  cv.addEventListener('pointerdown', e => {
+    if (game.state !== 'play') return;
+    e.preventDefault(); // sin gestos del navegador ni mouse sintético
+    if (e.clientX < innerWidth / 3) {
+      if (touch.stickId === -1) startStick(e);
+    } else if (touch.lookId === -1) startLook(e);
+  });
+  cv.addEventListener('pointermove', e => {
+    if (e.pointerId === touch.stickId) moveStick(e);
+    else if (e.pointerId === touch.lookId) moveLook(e);
+  });
+  const endPointer = e => {
+    if (e.pointerId === touch.stickId) { // soltar = stop suave: wish a 0 y el accel existente frena
+      touch.stickId = -1; touch.mag = 0; touch.wishF = touch.wishR = 0;
+      stickEl.classList.remove('active');
+      thumbEl.style.transform = '';
+    } else if (e.pointerId === touch.lookId) touch.lookId = -1;
+  };
+  cv.addEventListener('pointerup', endPointer);
+  cv.addEventListener('pointercancel', endPointer);
+
+  /* ---- botones: pointer capture implícito (el evento sigue al dedo aunque salga del
+          botón) → mantener presionado funciona; pointerleave NUNCA suelta la mira. ---- */
+  const bindBtn = (el, onDown, onUp) => {
+    el.addEventListener('contextmenu', e => e.preventDefault());
+    el.addEventListener('pointerdown', e => {
+      if (game.state !== 'play') return;
+      e.preventDefault();
+      setPressed(el, true);
+      onDown(e);
+    });
+    el.addEventListener('pointerup', e => { setPressed(el, false); onUp(e); });
+    el.addEventListener('pointercancel', e => { setPressed(el, false); onUp(e); });
+  };
+  // fireId se declaró junto a dropTouch, más arriba
+  bindBtn(tfire,
+    e => { if (fireId === -1) { fireId = e.pointerId; toggleFiring(true); } }, // auto-fire con cadencia desktop
+    // suelta solo si era ESE puntero el disparador: un segundo dedo tocando FIRE al
+    // levantarse no debe cortar el hold del primero
+    e => { if (e && e.pointerId === fireId) { fireId = -1; toggleFiring(false); } });
+  bindBtn(treload, () => tryReload(), () => {});
+  bindBtn(tjump, () => { player.jumpQueued = true; }, () => {});
+}
 
 /* ============================================================ shooting */
 const raycaster = new THREE.Raycaster();
@@ -1042,12 +1216,22 @@ function update(dt) {
   if (keys['KeyS']) wish.sub(f);
   if (keys['KeyD']) wish.add(r);
   if (keys['KeyA']) wish.sub(r);
+  // joystick táctil: empuje analógico (|wish| = mag ≤ 1). WASD normaliza a 1 abajo igual que antes.
+  if (touch.stickId !== -1 && touch.mag > 0.02) {
+    wish.x += f.x * touch.wishF + r.x * touch.wishR;
+    wish.z += f.z * touch.wishF + r.z * touch.wishR;
+  }
   const moving = wish.lengthSq() > 0;
-  if (moving) wish.normalize();
+  if (moving) {
+    const wl = wish.length();
+    if (wl > 1) wish.multiplyScalar(1 / wl); // WASD puro: idéntico al normalize() de antes
+  }
 
   player.sprintCd -= dt; player.sprintT -= dt;
   let speed = SPEED;
-  if (keys['ShiftLeft'] && moving && player.sprintCd <= 0 && player.sprintT <= 0) {
+  // sprint: Shift de desktop o joystick clavado al fondo (>0.92 del radio), mismo cooldown
+  if ((keys['ShiftLeft'] || (touch.stickId !== -1 && touch.mag > 0.92)) &&
+      moving && player.sprintCd <= 0 && player.sprintT <= 0) {
     player.sprintT = 0.3; player.sprintCd = 1.3;
   }
   if (player.sprintT > 0) speed *= SPRINT;
@@ -1056,7 +1240,10 @@ function update(dt) {
   player.vel.x += (wish.x * speed - player.vel.x) * Math.min(1, accel * dt / speed || 0.3);
   player.vel.z += (wish.z * speed - player.vel.z) * Math.min(1, accel * dt / speed || 0.3);
 
-  if (keys['Space'] && player.onGround) { player.vel.y = JUMP_V; player.onGround = false; }
+  if ((keys['Space'] || player.jumpQueued) && player.onGround) {
+    player.vel.y = JUMP_V; player.onGround = false;
+  }
+  player.jumpQueued = false;
   player.vel.y -= GRAVITY * dt;
 
   player.pos.x += player.vel.x * dt;
@@ -1072,8 +1259,15 @@ function update(dt) {
   player.recoilPitch = Math.max(0, player.recoilPitch - dt * 0.08);
   camera.position.copy(player.pos);
   camera.rotation.order = 'YXZ';
-  camera.rotation.y = player.yaw;
-  camera.rotation.x = clamp(player.pitch + player.recoilPitch, -1.55, 1.55);
+  if (TOUCH_MODE) {
+    // low-pass ~40 ms: los deltas del arrastre (arribados a ritmo de frame) se interpolan
+    // → giro suave sin snaps; dispara siempre hacia donde se ve (el ray usa la cámara renderizada)
+    const k = 1 - Math.exp(-dt * 24);
+    viewYaw += (player.yaw - viewYaw) * k;
+    viewPitch += (player.pitch - viewPitch) * k;
+  } else { viewYaw = player.yaw; viewPitch = player.pitch; }
+  camera.rotation.y = viewYaw;
+  camera.rotation.x = clamp(viewPitch + player.recoilPitch, -1.55, 1.55);
   const strafeAmt = moving ? wish.dot(r) : 0;
   player.roll += (-strafeAmt * 0.025 - player.roll) * Math.min(1, dt * 8);
   camera.rotation.z = player.roll;
@@ -1223,7 +1417,9 @@ function autoDegrade(now) {
 function loop() {
   requestAnimationFrame(loop);
   const dt = Math.min(clock.getDelta(), 0.05);
+  const prev = game.state;
   if (game.state === 'play') update(dt);
+  if (game.state !== prev) dispatchEvent(new CustomEvent('gamestate', { detail: game.state })); // ex: muerte dentro de update → soltar input táctil
   updateWorldFx(dt, clock.elapsedTime);
   if (bloomOn) composer.render();
   else renderer.render(scene, camera); // path directo: cero costo de composer
@@ -1239,7 +1435,8 @@ camera.position.copy(player.pos);
 camera.rotation.order = 'YXZ';
 window.__dbg = () => ({ state: game.state, wave: game.wave, en: enemies.length,
   q: game.spawnQueue.length, hp: Math.round(player.hp), score: game.score,
-  inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn });
+  inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn,
+  touchMode: TOUCH_MODE, firing });
 window.__probe = () => {
   if (!enemies.length) return 'no enemies';
   const o = camera.getWorldPosition(new THREE.Vector3());
