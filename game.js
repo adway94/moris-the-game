@@ -1,4 +1,4 @@
-// MORIS // ARENA — wave-based FPS, three.js r160, sin dependencias externas.
+// MORIS // ARENA — campaña FPS por niveles, three.js r160, sin dependencias externas.
 // E3: recursos estilo Doom — vida sin regen, armadura con absorción 60%, pools de
 // munición por tipo con caps, pickups billboard y drops por kill (ver PICKUPS/AMMO).
 // E4a: sistema de armas multipool — tabla WEAPONS declarativa, 6 armas (0-5) con viewmodel
@@ -6,12 +6,16 @@
 // E4b: arsenal completo (10/10) — Mate/plasma, Changó/doble (twin), Riel/perforante con
 // carga de gatillo y Compilador/orbe BFG (scorched + screen shake) + pickup de arma
 // (spawnWeaponPickup, listo para E5) + puerta trasera ?weapons=all (ver WEAPONS).
+// E5: CAMPAÑA "EL ÚLTIMO SECTOR" — tabla LEVELS (5 niveles con paleta/niebla/cielo/props
+// propios), buildArena(levelDef) regenera la escena con dispose limpio, oleadas por nivel
+// + mini-jefe elite, portal a la antesala, terminal entre niveles (guion pleno = E7),
+// 3 vidas con respawn suave y save "moris-campaign" (nivel/armas/pools/score).
 import * as THREE from 'three';
 import { EffectComposer } from './vendor/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from './vendor/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from './vendor/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from './vendor/examples/jsm/postprocessing/OutputPass.js';
-import { makeEnemySprite, makePickupSprite, makeWeaponSprite } from './sprites.js'; // E2: arte enemigo · E3: pickups · E4a: viewmodels
+import { makeEnemySprite, makePickupSprite, makeWeaponSprite, makePropSprite } from './sprites.js'; // E2: arte enemigo · E3: pickups · E4a: viewmodels · E5: props
 
 /* ============================================================ utils */
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -118,6 +122,13 @@ const Sfx = {
   dry()         { this.noise(0.02, 0.14, 2800, 3); this.tone('square', 150, 70, 0.03, 0.1); }, // aguja percutida: pool vacío
   wave()   { [440, 554, 659, 880].forEach((f, i) => setTimeout(() => this.tone('triangle', f, f, 0.16, 0.18), i * 110)); },
   death()  { this.tone('sawtooth', 300, 30, 1.1, 0.3); this.noise(0.8, 0.25, 220, 0.5); },
+  // E5 — campaña: el lamento grave del mini-jefe y la apertura del portal (barrido
+  // ascendente + soplo, se distingue del pickup de arma).
+  bossSpawn(){ this.tone('sawtooth', 70, 46, 1.2, 0.4); this.noise(1.0, 0.2, 160, 0.5);
+               setTimeout(() => this.tone('sawtooth', 58, 40, 1.0, 0.32), 240); },
+  portal() { this.tone('triangle', 90, 460, 0.55, 0.3); this.noise(0.5, 0.22, 900, 1.2); },
+  // E5 — respawn por vidas: "reinicio sectorial" (barrido corto de subida + clac).
+  respawn() { this.tone('square', 140, 620, 0.22, 0.2); this.noise(0.18, 0.2, 1400, 1.5); },
 };
 
 /* ============================================================ modo táctil
@@ -146,9 +157,10 @@ scene.fog = new THREE.FogExp2(0x081327, 0.016);
 
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 200);
 
-/* ============================================================ cielo procedural
-   esfera BackSide con gradiente vertical (negro cenital -> azul profundo en el
-   horizonte) + campo de ~1500 estrellas Points con titilación global por opacity. */
+/* ============================================================ cielo procedural (E5: por nivel)
+   La esfera BackSide + campo de estrellas se construye en buildSky(def) con el gradiente,
+   las estrellas y el "código" que declare la fila LEVELS.sky — ver más abajo. canvasTex
+   queda acá porque también lo usan las texturas de la arena. */
 function canvasTex(size, draw, repX = 1, repY = 1) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = size;
@@ -161,51 +173,41 @@ function canvasTex(size, draw, repX = 1, repY = 1) {
   return tx;
 }
 
-// gradiente vertical: fila 0 del canvas = cenit (v=1), última fila = bajo horizonte
-const skyTex = canvasTex(64, (c, S) => {
-  const g = c.createLinearGradient(0, 0, 0, S);
-  g.addColorStop(0.00, '#000104');
-  g.addColorStop(0.34, '#020715');
-  g.addColorStop(0.62, '#082142');
-  g.addColorStop(0.86, '#114374');
-  g.addColorStop(0.955, '#1d5d94'); // azul profundo del horizonte
-  g.addColorStop(1.00, '#0a1a30');
-  c.fillStyle = g; c.fillRect(0, 0, S, S);
-  // ruido tipo banding: líneas horizontales sutiles que el mip-mapping promedia
-  for (let i = 0; i < 60; i++) {
-    c.fillStyle = `rgba(150,190,255,${rand(0.006, 0.02).toFixed(3)})`;
-    c.fillRect(0, rand(0, S), S, 1);
-  }
-});
-skyTex.wrapS = THREE.ClampToEdgeWrapping;
-skyTex.wrapT = THREE.ClampToEdgeWrapping;
-const sky = new THREE.Mesh(
-  new THREE.SphereGeometry(150, 32, 20),
-  new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false }));
-scene.add(sky);
-
-// estrellas: cascarón esférico entre 72 y 138 m (dentro del cielo, bajo el far plane)
-const STAR_N = 1500;
-const starGeo = new THREE.BufferGeometry();
-{
-  const pos = new Float32Array(STAR_N * 3), col = new Float32Array(STAR_N * 3);
-  const tmp = new THREE.Color();
-  for (let i = 0; i < STAR_N; i++) {
-    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
-    const rad = rand(72, 138), r = Math.sqrt(1 - u * u);
-    pos[i * 3] = Math.cos(th) * r * rad;
-    pos[i * 3 + 1] = u * rad;
-    pos[i * 3 + 2] = Math.sin(th) * r * rad;
-    const k = Math.random();
-    if (k > 0.86) tmp.setRGB(1.7, 1.15, 0.75);          // cálidas
-    else if (k > 0.55) tmp.setRGB(0.95, 1.3, 1.9);      // azules
-    else tmp.setRGB(1.35, 1.5, 1.65);                   // blancas
-    tmp.multiplyScalar(rand(0.4, 1.15)); // parte queda bajo el threshold: no todo titila en HDR
-    col[i * 3] = tmp.r; col[i * 3 + 1] = tmp.g; col[i * 3 + 2] = tmp.b;
-  }
-  starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  starGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+/* cielo POR NIVEL (E5): todo lo de acá abajo vive en `world` (grupo que buildArena
+   destruye/rearma) con gradiente + estrellas + "código" parametrizados por la fila
+   LEVELS.sky {kind, stops, stars, code}. Los temporales de módulo (starGeo/starTex)
+   se crean UNA vez; por nivel solo se crean el Points/geo de estrellas y los materiales
+   del domo, que se registran en levelRes para el dispose del rebuild. */
+function mkGradientTex(stops, noiseCol) {
+  const tx = canvasTex(64, (c, S) => {
+    const g = c.createLinearGradient(0, 0, 0, S);
+    for (const [k, v] of stops) g.addColorStop(k, v);
+    c.fillStyle = g; c.fillRect(0, 0, S, S);
+    for (let i = 0; i < 60; i++) { // ruido tipo banding (como el cielo original)
+      c.fillStyle = `rgba(${noiseCol},${rand(0.006, 0.02).toFixed(3)})`;
+      c.fillRect(0, rand(0, S), S, 1);
+    }
+  });
+  tx.wrapS = tx.wrapT = THREE.ClampToEdgeWrapping;
+  return tx;
 }
+
+// N5 "código": filas de pixels cian sobre negro. Canvas chico (128) estirado con
+// NEAREST a un domo de 150 m: pixeles gigantes retro. game.js lo re-dibuja throttleado
+// (levelFx) para el parpadeo — cada redibujado sube 16 KB al GPU, costo irrisorio.
+function codeCanvasDraw(c, S, tt) {
+  c.fillStyle = '#000305'; c.fillRect(0, 0, S, S);
+  c.fillStyle = 'rgba(84,240,255,0.75)';
+  for (let y = 0; y < S; y += 8) {
+    const row = (Math.sin(tt * 0.7 + y * 1.7) * 43758.5453) % 1;
+    const on = ((tt * 3 + y) | 0) % 3 !== 0; // la mitad de las filas parpadea por frames
+    if (!on) continue;
+    for (let x = ((row * 17) | 0); x < S; x += 4)
+      if (Math.random() < 0.34) c.fillRect(x, y, 2, 2);
+  }
+}
+
+const STAR_N = 1500;
 const starTex = canvasTex(64, (c, S) => {
   const g = c.createRadialGradient(S / 2, S / 2, 1, S / 2, S / 2, S / 2);
   g.addColorStop(0, 'rgba(255,255,255,1)');
@@ -217,15 +219,66 @@ const starMat = new THREE.PointsMaterial({
   size: 0.42, sizeAttenuation: true, map: starTex, vertexColors: true,
   transparent: true, opacity: 0.92, depthWrite: false,
   blending: THREE.AdditiveBlending, fog: false });
-const stars = new THREE.Points(starGeo, starMat);
-stars.renderOrder = -1;
-scene.add(stars);
 
-// entorno PMREM a partir del propio gradiente: reflejos azules sutiles en PBR
-{
+// construye domo + estrellas + PMREM del nivel actual (llamar con `world` ya limpio)
+function buildSky(def) {
+  const SKY = def.sky;
+  let tex;
+  if (SKY.code) {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 128;
+    const cc = cv.getContext('2d');
+    codeCanvasDraw(cc, 128, 0);
+    tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    levelFx.push((dt, t) => { // parpadeo throttle 0.14 s (~9 frames a 60)
+      levelFx._t = (levelFx._t || 0) + 1;
+      if (levelFx._t % 9 === 0) {
+        codeCanvasDraw(cc, 128, t); // clock del loop (avanza también en pausa/menú)
+        tex.needsUpdate = true;
+      }
+    });
+  } else {
+    tex = mkGradientTex(SKY.stops, def.pal.noise);
+  }
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(150, 32, 20),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false }));
+  sky.renderOrder = -2;
+  world.add(sky);
+
+  if (SKY.stars) { // cascarón esférico 72-138 m (bajo el far plane), como el cielo madre
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(STAR_N * 3), col = new Float32Array(STAR_N * 3);
+    const tmp = new THREE.Color();
+    for (let i = 0; i < STAR_N; i++) {
+      const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+      const rad = rand(72, 138), r = Math.sqrt(1 - u * u);
+      pos[i * 3] = Math.cos(th) * r * rad;
+      pos[i * 3 + 1] = u * rad;
+      pos[i * 3 + 2] = Math.sin(th) * r * rad;
+      const k = Math.random();
+      if (k > 0.86) tmp.setRGB(1.7, 1.15, 0.75);          // cálidas
+      else if (k > 0.55) tmp.setRGB(0.95, 1.3, 1.9);      // azules
+      else tmp.setRGB(1.35, 1.5, 1.65);                   // blancas
+      tmp.multiplyScalar(rand(0.4, 1.15)); // parte queda bajo el threshold: no todo titila en HDR
+      col[i * 3] = tmp.r; col[i * 3 + 1] = tmp.g; col[i * 3 + 2] = tmp.b;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const st = new THREE.Points(geo, starMat); // starMat es compartido y sobrevive al dispose
+    st.renderOrder = -1;
+    world.add(st);
+  }
+
+  // entorno PMREM a partir del propio gradiente: reflejos sutiles en PBR. La textura
+  // PMREM es del nivel → se disposea en el rebuild (era leak silencioso si no).
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromEquirectangular(skyTex).texture;
+  scene.environment = pmrem.fromEquirectangular(tex).texture;
   pmrem.dispose();
+  levelRes.push(scene.environment);
 }
 
 /* ============================================================ post-processing
@@ -332,32 +385,116 @@ addEventListener('resize', () => {
   applyComposerSize(); // retro: re-deriva el buffer interno con el aspect/dpr nuevo
 });
 
-/* lights */
-scene.add(new THREE.HemisphereLight(0x4a6ea8, 0x0e1424, 1.7));
-const sun = new THREE.DirectionalLight(0xbfd8ff, 2.6);
-sun.position.set(18, 30, 12);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -40; sun.shadow.camera.right = 40;
-sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40;
-sun.shadow.camera.far = 90;
-scene.add(sun);
+/* lights: EL RIG es fijo (no se recrea entre niveles — sin leak de shadow maps), pero
+   colores/intensidades los fija configureLights(def) por paleta (N4 baja la ambiental y
+   sube los emisivos: "casi sin luz"). Se declaran acá porque buildArena los configura. */
+const hemi = new THREE.HemisphereLight(0x4a6ea8, 0x0e1424, 1.7);
+scene.add(hemi);
+let sun, rimCyan, rimMagenta;
+function configureLights(def) {
+  const L = def.light; // [hemi[cielo, suelo, int]] [sun[color, int]] [rim cian, rim magenta, int, int]
+  hemi.color.set(L[0][0]); hemi.groundColor.set(L[0][1]); hemi.intensity = L[0][2];
+  sun.color.set(L[1][0]); sun.intensity = L[1][1];
+  rimCyan.color.set(L[2][0]); rimCyan.intensity = L[2][2];
+  rimMagenta.color.set(L[2][1]); rimMagenta.intensity = L[2][3];
+}
 
-/* ============================================================ arena */
+/* ============================================================ campaña: LEVELS + arena (E5)
+   El viejo buildArena hardcodeado pasa a ser buildArena(levelDef): UNA FILA POR NIVEL =
+   spec de mapa (geometría procedural con semilla + set de props + paleta + niebla + cielo
+   + luces). Layout de cajas: mismo motor del arena madre pero con semilla por nivel
+   (mulberry32 → el mismo mapa en cada visita, clave para el retry del save) y las dos
+   zonas libres de siempre: spawn del jugador (sur) y antesala del portal (norte).
+   Presupuesto de rendimiento (E2/E3): ≤40 props por nivel, geometría/materiales
+   COMPARTIDOS por tipo de prop, y TODO lo del nivel vive en el grupo `world` con sus
+   recursos registrados en `levelRes` → buildArena hace dispose limpio del nivel anterior
+   (geos, mats, texturas, PMREM) antes de construir el siguiente. */
 const ARENA = 32;              // semi-lado del piso jugable
 const WALL_H = 5;
-const solids = [];             // mallas que bloquean balas
-const boxes = [];              // AABBs para colisión {min:Vec3, max:Vec3}
+const solids = [];             // mallas que bloquean balas (se vacía en cada build)
+const boxes = [];              // AABBs para colisión {min:Vec3, max:Vec3} (idem)
+const world = new THREE.Group(); // grupo de TODO el contenido del nivel (cielo incluido)
+scene.add(world);
+let levelRes = [];             // recursos del nivel actual con .dispose() (geos/mats/textos)
+let levelFx = [];              // callbacks ambientales del nivel (lava, cubos, chispas, portal)
 
 function addSolid(mesh, collide = true) {
   mesh.castShadow = true; mesh.receiveShadow = true;
-  scene.add(mesh); solids.push(mesh);
+  world.add(mesh); solids.push(mesh);
   if (collide) {
     mesh.updateWorldMatrix(true, false);
     const bb = new THREE.Box3().setFromObject(mesh);
     boxes.push({ min: bb.min.clone(), max: bb.max.clone() });
   }
 }
+
+// PRNG determinista (mulberry32): layouts reproducibles por nivel
+function mulberry32(a) {
+  return () => {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// paleta del nivel: colores SÓLO en hex strings (los niveles viven en la tabla de abajo)
+const PALETTES = {
+  criopods:   { floor: '#0e1523', lite: '#243754', dark: '#050910', seam: '84,240,255',  wall: '#101a30', wallLite: '150,190,255', chevron: '#c96a1c', chevronLite: 'rgba(255,196,96,0.5)', chevronBack: '#1a1206', ob: '#202c48', obLite: '190,215,255', neon: 0x54f0ff, noise: '150,190,255' },
+  invernadero:{ floor: '#0c1a10', lite: '#1e3a24', dark: '#040b06', seam: '77,220,110',  wall: '#12241a', wallLite: '140,220,160', chevron: '#3fae54', chevronLite: 'rgba(140,255,160,0.5)', chevronBack: '#0b1a0e', ob: '#1f3a26', obLite: '170,240,190', neon: 0x5eff8a, noise: '150,255,190' },
+  reactor:    { floor: '#1b120a', lite: '#43301c', dark: '#0b0704', seam: '255,154,61',  wall: '#2a1a0e', wallLite: '255,180,120', chevron: '#ff6a2a', chevronLite: 'rgba(255,220,150,0.5)', chevronBack: '#26100a', ob: '#3a2718', obLite: '255,200,150', neon: 0xff9a3d, noise: '255,180,120' },
+  cripta:     { floor: '#14101f', lite: '#2c2440', dark: '#070510', seam: '170,92,255',  wall: '#1c1630', wallLite: '190,160,255', chevron: '#7a4dbf', chevronLite: 'rgba(200,150,255,0.5)', chevronBack: '#150e24', ob: '#262040', obLite: '200,180,255', neon: 0xaa5cff, noise: '190,160,255' },
+  nucleo:     { floor: '#020409', lite: '#0a1626', dark: '#000104', seam: '84,240,255',  wall: '#05090f', wallLite: '120,240,255', chevron: '#2ad4ff', chevronLite: 'rgba(160,255,255,0.6)', chevronBack: '#041420', ob: '#0a1420', obLite: '150,230,255', neon: 0x54f0ff, noise: '120,240,255' },
+};
+
+/* Las 5 de DESIGN_ARSENAL.md/PLAN_ITERACION.md. Campos:
+   · waves + boss.type (elite scale×2.2 hp×6) y weapons {early, exit, mid} = colocación
+     de armas del guion (early: al iniciar · exit: ANTES del portal en la antesala, no te
+     lo podés perder · mid: tras completar las waves, "te lo da MORIS").
+   · sky {kind:'stars'|'dome'|'void', stops, stars, code} · fog {color, density}
+   · light: [hemi sky, ground, int] [sun col, int] [rim cian, rim magenta, int, int]
+   · set: constructor de geometría propia + props (≤40) — ver funciones setXxx abajo. */
+const LEVELS = [
+  { id: 1, name: 'CRIOPODS', subtitle: 'el frío despierta a todo, incluso a lo que no debería',
+    waves: 3, seed: 1337, pal: PALETTES.criopods,
+    weapons: { exit: 'moris12' },                              // "escopeta al final N1": antesala del portal
+    sky: { kind: 'stars', stops: [[0, '#000104'], [0.34, '#020715'], [0.62, '#082142'], [0.86, '#114374'], [0.955, '#1d5d94'], [1, '#0a1a30']], stars: true },
+    bg: 0x05070d, fog: { color: 0x081327, density: 0.021 },        // niebla azul densa
+    light: [[0x4a6ea8, 0x0e1424, 1.5], [0xbfd8ff, 2.4], [0x2ad4ff, 0xff3bd8, 95, 80]],
+    set: setCriopods },
+  { id: 2, name: 'INVERNADERO', subtitle: 'el jardín de MORIS-9, regado con tripulación',
+    waves: 4, seed: 552, pal: PALETTES.invernadero,
+    weapons: { early: 'ametralladora', exit: 'asador' },       // N2 early / N2 final (guion DESIGN_ARSENAL)
+    sky: { kind: 'dome', stops: [[0, '#02150c'], [0.3, '#06351d'], [0.6, '#0d5a2c'], [0.85, '#1d8a45'], [0.95, '#2fb35c'], [1, '#0a2f1a']], stars: false },
+    bg: 0x04120a, fog: { color: 0x0d3a1e, density: 0.023 },        // niebla verde
+    light: [[0x4ac07a, 0x0a1c10, 1.8], [0xaaffc4, 2.2], [0x3ddc84, 0xff3bd8, 90, 70]],
+    set: setInvernadero },
+  { id: 3, name: 'REACTOR', subtitle: 'el naranja NO es suelo',
+    waves: 4, seed: 9081, pal: PALETTES.reactor,
+    weapons: { early: 'kira', exit: 'mate' },
+    sky: { kind: 'dome', stops: [[0, '#0a0503'], [0.45, '#1e0b04'], [0.72, '#59210a'], [0.9, '#9c4413'], [1, '#2a0f06']], stars: false },
+    bg: 0x120803, fog: { color: 0x3a1608, density: 0.02 },         // fog naranja
+    light: [[0x9a5a2a, 0x1c0c04, 1.6], [0xffc890, 2.0], [0xff7a2a, 0xffd166, 110, 60]],
+    set: setReactor },
+  { id: 4, name: 'CRIPTA', subtitle: 'arte anterior a la inteligencia. o a la mía',
+    waves: 5, seed: 4242, pal: PALETTES.cripta, trimK: 2.4, // filo de muros más HDR (ambiental casi muerta)
+    weapons: { early: 'chango', exit: 'riel' },
+    sky: { kind: 'void', stops: [[0, '#020107'], [0.55, '#0a0618'], [0.85, '#160c2e'], [1, '#070410']], stars: false },
+    bg: 0x060309, fog: { color: 0x160c2e, density: 0.028 },        // casi a ciegas
+    light: [[0x3a2c58, 0x070410, 0.55], [0x9a7ad0, 0.5], [0xaa5cff, 0x5450ff, 130, 90]], // ambient al piso: los emisivos cargan la escena
+    set: setCripta },
+  { id: 5, name: 'NÚCLEO: MORIS-9', subtitle: 'todo ascensor termina donde empezó todo',
+    waves: 1, seed: 777, pal: PALETTES.nucleo, seamK: 2.2, // grilla cian tipo Tron (junta del piso al doble)
+    weapons: { mid: 'compilador' },                           // "N5 medio: tras las oleadas, te lo da MORIS"
+    sky: { kind: 'void', code: true },                             // vacío negro con código cian
+    bg: 0x000205, fog: { color: 0x03141f, density: 0.013 },        // niebla cian fina
+    light: [[0x14344a, 0x02060a, 1.0], [0x88d0ff, 1.3], [0x2ad4ff, 0x1150ff, 120, 70]],
+    set: setNucleo },
+];
+// waves globales acumuladas antes del nivel i (para el número global de game.wave): [0,3,7,11,16]
+const waveBaseFor = i => LEVELS.slice(0, i).reduce((s, l) => s + l.waves, 0);
+const levelDef = () => LEVELS[game.level - 1];
+const diffMult = () => 1 + 0.25 * (game.level - 1); // recalibración de dificultad por sector
 
 /* ---------------- texturas procedurales del arena (canvas, sin assets) ------- */
 function specks(c, S, n, pick) {
@@ -370,201 +507,163 @@ function rivet(c, x, y, r = 6) {
   c.fillStyle = 'rgba(0,0,0,0.5)'; c.beginPath(); c.arc(x + r * 0.35, y + r * 0.4, r * 0.24, 0, 7); c.fill();
 }
 
-// Piso: paneles metálicos sci-fi — placa con bisel, remaches, junta cian en la
-// costura, ranura de ventilación, código de barras y ruido sutil. 1 tile = 4 m.
-const floorTex = canvasTex(512, (c, S) => {
-  c.fillStyle = '#0d1424'; c.fillRect(0, 0, S, S);
-  for (let i = 0; i < 240; i++) { // rayado vertical tipo chapa
-    c.fillStyle = `rgba(${(120 + rand(0, 90)) | 0},${(160 + rand(0, 75)) | 0},255,${rand(0.012, 0.04).toFixed(3)})`;
-    c.fillRect(rand(0, S), 0, rand(0.6, 2.4), S);
-  }
-  // costura del tile (biselada, con junta emisiva tenue que al repetir forma la grilla)
-  c.strokeStyle = '#060a13'; c.lineWidth = 26; c.strokeRect(14, 14, S - 28, S - 28);
-  c.strokeStyle = 'rgba(84,240,255,0.30)'; c.lineWidth = 3; c.strokeRect(14, 14, S - 28, S - 28);
-  c.strokeStyle = 'rgba(84,240,255,0.09)'; c.lineWidth = 9; c.strokeRect(14, 14, S - 28, S - 28);
-  // placa interior con bisel (luz arriba/izq, sombra abajo/der)
-  c.fillStyle = '#121a2e'; c.fillRect(30, 30, S - 60, S - 60);
-  c.strokeStyle = '#28375a'; c.lineWidth = 5;
-  c.beginPath(); c.moveTo(30, 484); c.lineTo(30, 30); c.lineTo(484, 30); c.stroke();
-  c.strokeStyle = '#05080f';
-  c.beginPath(); c.moveTo(484, 32); c.lineTo(484, 484); c.lineTo(32, 484); c.stroke();
-  for (let i = 0; i < 150; i++) { // ruido fino sobre la placa
-    c.fillStyle = Math.random() < 0.5 ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.05)';
-    c.fillRect(rand(34, 476), rand(34, 476), rand(1, 3), 1);
-  }
-  // sub-panel interior rebajado
-  c.strokeStyle = 'rgba(0,0,0,0.55)'; c.lineWidth = 3; c.strokeRect(150, 150, 212, 212);
-  c.strokeStyle = 'rgba(160,200,255,0.05)'; c.lineWidth = 1; c.strokeRect(153, 153, 206, 206);
-  [58, 454].forEach(x => [58, 454].forEach(y => rivet(c, x, y)));
-  // ranura de ventilación
-  c.fillStyle = '#060a12'; rr(c, 330, 340, 128, 40, 8); c.fill();
-  c.strokeStyle = 'rgba(160,200,255,0.08)'; c.lineWidth = 1; rr(c, 330, 340, 128, 40, 8); c.stroke();
-  c.fillStyle = '#1c2942';
-  for (let i = 0; i < 5; i++) c.fillRect(338, 346 + i * 7, 112, 2);
-  // código de barras + marcas de stencil cian
-  let bx = 66;
-  while (bx < 170) { const w = rand(1, 3.4); c.fillStyle = `rgba(150,190,220,${rand(0.07, 0.18).toFixed(2)})`; c.fillRect(bx, 344, w, 34); bx += w + rand(1.5, 4); }
-  c.fillStyle = 'rgba(84,240,255,0.28)'; c.fillRect(66, 300, 46, 5); c.fillRect(66, 311, 22, 5);
-  c.fillStyle = 'rgba(84,240,255,0.16)'; c.fillRect(404, 96, 5, 30); c.fillRect(415, 96, 5, 18);
-  specks(c, S, 220, () => Math.random() < 0.5 ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.08)');
-}, 16, 16);
-
-const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(ARENA * 2, ARENA * 2),
-  new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.7, metalness: 0.32, envMapIntensity: 0.35 }));
-floor.rotation.x = -Math.PI / 2;
-floor.receiveShadow = true;
-scene.add(floor);
-
-// Muros: paneles verticales con rejilla de detalle, franja de chevrons naranjas
-// de advertición abajo y zócalo oscuro. 1 tile ≈ 6 × 5 m (repeat 11 × 1).
-const wallTex = canvasTex(256, (c, S) => {
-  c.fillStyle = '#101a30'; c.fillRect(0, 0, S, S);
-  // rejilla sutil en toda la cara
-  c.strokeStyle = 'rgba(120,180,255,0.035)'; c.lineWidth = 1;
-  c.beginPath();
-  for (let x = 16; x < S; x += 16) { c.moveTo(x + 0.5, 0); c.lineTo(x + 0.5, S); }
-  for (let y = 16; y < S; y += 16) { c.moveTo(0, y + 0.5); c.lineTo(S, y + 0.5); }
-  c.stroke();
-  // juntas verticales de panel (cada 64 px = ~1.5 m) con filo iluminado
-  [0, 64, 128, 192].forEach(x => {
-    c.fillStyle = '#070b15'; c.fillRect(x - 2, 0, 5, S);
-    c.fillStyle = 'rgba(150,190,255,0.10)'; c.fillRect(x + 3, 0, 1, S);
-  });
-  // pernos a media altura
-  [32, 96, 160, 224].forEach(x => rivet(c, x, 108, 3));
-  // sombra del borde superior
-  const g = c.createLinearGradient(0, 0, 0, 68);
-  g.addColorStop(0, 'rgba(0,0,0,0.5)'); g.addColorStop(1, 'rgba(0,0,0,0)');
-  c.fillStyle = g; c.fillRect(0, 0, S, 68);
-  // ---- franja de chevrons naranjas (paso 32 → envuelve sin costura) ----
-  const BY = S - 88, BH = 54;
-  c.save();
-  c.beginPath(); c.rect(0, BY, S, BH); c.clip();
-  c.fillStyle = '#1a1206'; c.fillRect(0, BY, S, BH);
-  c.lineCap = 'square';
-  for (let x = -S; x < S * 2; x += 32) {
-    c.strokeStyle = '#c96a1c'; c.lineWidth = 15;
-    c.beginPath(); c.moveTo(x, BY + BH + 20); c.lineTo(x + BH + 40, BY - 20); c.stroke();
-    c.strokeStyle = 'rgba(255,196,96,0.5)'; c.lineWidth = 3;
-    c.beginPath(); c.moveTo(x, BY + BH + 20); c.lineTo(x + BH + 40, BY - 20); c.stroke();
-  }
-  c.restore();
-  c.fillStyle = '#05070c'; c.fillRect(0, BY - 5, S, 5); c.fillRect(0, BY + BH, S, 4);
-  c.fillStyle = 'rgba(255,154,61,0.55)'; c.fillRect(0, BY - 8, S, 2);
-  // zócalo inferior
-  const g2 = c.createLinearGradient(0, S - 34, 0, S);
-  g2.addColorStop(0, 'rgba(2,4,9,0.15)'); g2.addColorStop(1, 'rgba(2,4,9,0.85)');
-  c.fillStyle = g2; c.fillRect(0, S - 34, S, 34);
-  // rayones y mugre
-  for (let i = 0; i < 26; i++) {
-    c.strokeStyle = `rgba(0,0,0,${rand(0.12, 0.3).toFixed(2)})`; c.lineWidth = rand(1, 2.4);
-    const x = rand(0, S), y = rand(0, S - 96), l = rand(6, 34);
-    c.beginPath(); c.moveTo(x, y); c.lineTo(x + rand(-l, l), y + rand(-l * 0.3, l * 0.3)); c.stroke();
-  }
-  specks(c, S, 160, () => Math.random() < 0.6 ? 'rgba(0,0,0,0.10)' : 'rgba(160,200,255,0.04)');
-}, 11, 1);
-
-const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.8, metalness: 0.35, envMapIntensity: 0.3 });
-const trimMat = new THREE.MeshBasicMaterial({ color: neon(0x54f0ff, 1.55) }); // filo superior: bloom suave
-[[0, -ARENA - 0.5, ARENA * 2 + 2, 1], [0, ARENA + 0.5, ARENA * 2 + 2, 1],
- [-ARENA - 0.5, 0, 1, ARENA * 2 + 2], [ARENA + 0.5, 0, 1, ARENA * 2 + 2]].forEach(([x, z, w, d]) => {
-  const wall = new THREE.Mesh(new THREE.BoxGeometry(w, WALL_H, d), wallMat);
-  wall.position.set(x, WALL_H / 2, z);
-  addSolid(wall, false); // colisión con límites se hace por clamp
-  const trim = new THREE.Mesh(new THREE.BoxGeometry(w * 0.995, 0.07, d * 0.995), trimMat);
-  trim.position.set(x, WALL_H - 0.35, z);
-  scene.add(trim);
-});
-
-// Obstáculos: metal cepillado con bordes achaflanados gastados y esquinas
-// desportilladas (el desgaste vive en los bordes del UV de cada cara).
-const obTex = canvasTex(256, (c, S) => {
-  c.fillStyle = '#202c48'; c.fillRect(0, 0, S, S);
-  for (let i = 0; i < 340; i++) { // cepillado horizontal
-    c.fillStyle = Math.random() < 0.55
-      ? `rgba(190,215,255,${rand(0.015, 0.055).toFixed(3)})`
-      : `rgba(0,0,0,${rand(0.02, 0.06).toFixed(3)})`;
-    c.fillRect(0, rand(0, S), S, rand(0.6, 2));
-  }
-  // bisel de aristas: gradientes interior + hilo brillante del chaflán
-  const gl = [c.createLinearGradient(0, 0, 0, 26), c.createLinearGradient(0, S - 26, 0, S),
-              c.createLinearGradient(0, 0, 26, 0), c.createLinearGradient(S - 26, 0, S, 0)];
-  const fills = ['rgba(200,222,255,0.10)', 'rgba(0,0,0,0.38)', 'rgba(160,190,240,0.06)', 'rgba(0,0,0,0.20)'];
-  gl[0].addColorStop(0, fills[0]); gl[0].addColorStop(1, 'rgba(0,0,0,0)');
-  gl[1].addColorStop(0, 'rgba(0,0,0,0)'); gl[1].addColorStop(1, fills[1]);
-  gl[2].addColorStop(0, fills[2]); gl[2].addColorStop(1, 'rgba(0,0,0,0)');
-  gl[3].addColorStop(0, 'rgba(0,0,0,0)'); gl[3].addColorStop(1, fills[3]);
-  c.fillStyle = gl[0]; c.fillRect(0, 0, S, 26);
-  c.fillStyle = gl[1]; c.fillRect(0, S - 26, S, 26);
-  c.fillStyle = gl[2]; c.fillRect(0, 0, 26, S);
-  c.fillStyle = gl[3]; c.fillRect(S - 26, 0, 26, S);
-  c.strokeStyle = 'rgba(205,225,255,0.30)'; c.lineWidth = 1; c.strokeRect(0.5, 0.5, S - 1, S - 1);
-  // desgaste de esquinas: manchas claras + picaduras oscuras + rasguños radiales
-  [[14, 14, 1, 1], [S - 14, 14, -1, 1], [14, S - 14, 1, -1], [S - 14, S - 14, -1, -1]].forEach(([cx, cy, sx, sy]) => {
-    for (let i = 0; i < 24; i++) {
-      c.fillStyle = `rgba(208,226,250,${rand(0.05, 0.24).toFixed(2)})`;
-      c.beginPath(); c.ellipse(cx + sx * rand(0, 32), cy + sy * rand(0, 32), rand(0.5, 2.6), rand(0.5, 2.2), rand(0, 3.14), 0, 7); c.fill();
+// Piso (E5 parametrizado por paleta): paneles metálicos sci-fi — placa con bisel,
+// remaches, junta emisiva en la costura (pal.seam; en N5 sube de brillo: grilla Tron),
+// ranura de ventilación, código de barras y ruido sutil. 1 tile = 4 m.
+function makeFloorTex(pal, seamK = 1) {
+  return canvasTex(512, (c, S) => {
+    c.fillStyle = pal.floor; c.fillRect(0, 0, S, S);
+    for (let i = 0; i < 240; i++) { // rayado vertical tipo chapa
+      c.fillStyle = `rgba(${pal.noise},${rand(0.012, 0.04).toFixed(3)})`;
+      c.fillRect(rand(0, S), 0, rand(0.6, 2.4), S);
     }
-    for (let i = 0; i < 10; i++) {
-      c.fillStyle = `rgba(8,12,22,${rand(0.15, 0.38).toFixed(2)})`;
-      c.beginPath(); c.arc(cx + sx * rand(0, 28), cy + sy * rand(0, 28), rand(0.4, 1.8), 0, 7); c.fill();
+    // costura del tile (biselada, con junta emisiva tenue que al repetir forma la grilla)
+    c.strokeStyle = pal.dark; c.lineWidth = 26; c.strokeRect(14, 14, S - 28, S - 28);
+    c.strokeStyle = `rgba(${pal.seam},${Math.min(0.9, 0.30 * seamK).toFixed(2)})`; c.lineWidth = 3; c.strokeRect(14, 14, S - 28, S - 28);
+    c.strokeStyle = `rgba(${pal.seam},${Math.min(0.4, 0.09 * seamK).toFixed(2)})`; c.lineWidth = 9; c.strokeRect(14, 14, S - 28, S - 28);
+    // placa interior con bisel (luz arriba/izq, sombra abajo/der)
+    c.fillStyle = pal.lite; c.fillRect(30, 30, S - 60, S - 60);
+    c.strokeStyle = pal.floor; c.lineWidth = 5;
+    c.beginPath(); c.moveTo(30, 484); c.lineTo(30, 30); c.lineTo(484, 30); c.stroke();
+    c.strokeStyle = pal.dark;
+    c.beginPath(); c.moveTo(484, 32); c.lineTo(484, 484); c.lineTo(32, 484); c.stroke();
+    for (let i = 0; i < 150; i++) { // ruido fino sobre la placa
+      c.fillStyle = Math.random() < 0.5 ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.05)';
+      c.fillRect(rand(34, 476), rand(34, 476), rand(1, 3), 1);
     }
-    for (let i = 0; i < 5; i++) {
-      c.strokeStyle = `rgba(220,235,255,${rand(0.06, 0.16).toFixed(2)})`; c.lineWidth = rand(0.5, 1.2);
-      const a = rand(0.6, 2.2);
-      c.beginPath(); c.moveTo(cx, cy);
-      c.lineTo(cx + Math.cos(a) * sx * rand(10, 36), cy + Math.sin(a) * sy * rand(10, 36)); c.stroke();
-    }
-    rivet(c, cx + sx * 8, cy + sy * 8, 3);
-  });
-  // marca de plantilla central
-  c.fillStyle = 'rgba(255,154,61,0.16)'; c.fillRect(104, 116, 48, 8); c.fillRect(104, 130, 26, 8);
-  let bx = 158; while (bx < 186) { const w = rand(1, 2.6); c.fillStyle = `rgba(200,220,250,${rand(0.08, 0.16).toFixed(2)})`; c.fillRect(bx, 116, w, 22); bx += w + rand(1.5, 3); }
-  specks(c, S, 180, () => Math.random() < 0.5 ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.09)');
-}, 2, 2);
-const obMat = new THREE.MeshStandardMaterial({ map: obTex, roughness: 0.55, metalness: 0.45, envMapIntensity: 0.55 });
-const OBSTACLES = [
-  [-14, -10, 5, 3, 5], [13, 11, 6, 2, 4], [-11, 14, 4, 4, 8], [16, -14, 4, 5, 4],
-  [0, -18, 8, 1.6, 3], [-20, 2, 3, 6, 3], [20, 4, 3, 2.5, 9], [4, 8, 3.5, 3, 3.5],
-  [-4, -4, 3, 2, 3], [8, -4, 2.5, 4.5, 2.5], [-22, -20, 5, 3, 5], [22, 22, 5, 2, 5],
-  [-16, 18, 6, 4, 3], [22, 22, 5, 2, 5],
-];
-OBSTACLES.forEach(([x, z, w, h, d], i) => {
-  const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), obMat);
-  b.position.set(x, h / 2, z);
-  addSolid(b);
-  if (i % 3 === 0) { // franja neón HDR encima de algunos bloques: canal oscuro + núcleo bloom
-    const ch = new THREE.Mesh(new THREE.BoxGeometry(w * 0.88, 0.1, d * 0.88),
-      new THREE.MeshStandardMaterial({ color: 0x070b14, roughness: 0.4, metalness: 0.6 }));
-    ch.position.set(x, h - 0.01, z);
-    addSolid(ch, false);
-    const glow = new THREE.Mesh(new THREE.BoxGeometry(w * 0.8, 0.06, d * 0.8),
-      new THREE.MeshBasicMaterial({ color: neon(i % 2 ? 0xff4d5e : 0x54f0ff, 2.1) }));
-    glow.position.set(x, h + 0.05, z);
-    scene.add(glow);
-  }
-});
-// pilones de luz en las esquinas
-[[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(([sx, sz]) => {
-  const p = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.35, WALL_H + 1.5, 8), obMat);
-  p.position.set(sx * (ARENA - 2), (WALL_H + 1.5) / 2, sz * (ARENA - 2));
-  addSolid(p);
-  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 12),
-    new THREE.MeshBasicMaterial({ color: neon(0xffd166, 2.1) }));
-  bulb.position.set(sx * (ARENA - 2), WALL_H + 1.7, sz * (ARENA - 2));
-  scene.add(bulb);
-  const pl = new THREE.PointLight(0xffd166, 30, 26, 2);
-  pl.position.copy(bulb.position);
-  scene.add(pl);
-});
+    // sub-panel interior rebajado
+    c.strokeStyle = 'rgba(0,0,0,0.55)'; c.lineWidth = 3; c.strokeRect(150, 150, 212, 212);
+    c.strokeStyle = `rgba(${pal.noise},0.05)`; c.lineWidth = 1; c.strokeRect(153, 153, 206, 206);
+    [58, 454].forEach(x => [58, 454].forEach(y => rivet(c, x, y)));
+    // ranura de ventilación
+    c.fillStyle = pal.dark; rr(c, 330, 340, 128, 40, 8); c.fill();
+    c.strokeStyle = `rgba(${pal.noise},0.08)`; c.lineWidth = 1; rr(c, 330, 340, 128, 40, 8); c.stroke();
+    c.fillStyle = pal.lite;
+    for (let i = 0; i < 5; i++) c.fillRect(338, 346 + i * 7, 112, 2);
+    // código de barras + marcas de stencil en el neón del nivel
+    let bx = 66;
+    while (bx < 170) { const w = rand(1, 3.4); c.fillStyle = `rgba(${pal.noise},${rand(0.07, 0.18).toFixed(2)})`; c.fillRect(bx, 344, w, 34); bx += w + rand(1.5, 4); }
+    c.fillStyle = `rgba(${pal.seam},0.28)`; c.fillRect(66, 300, 46, 5); c.fillRect(66, 311, 22, 5);
+    c.fillStyle = `rgba(${pal.seam},0.16)`; c.fillRect(404, 96, 5, 30); c.fillRect(415, 96, 5, 18);
+    specks(c, S, 220, () => Math.random() < 0.5 ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.08)');
+  }, 16, 16);
+}
 
-// rim lights: cian y magenta en esquinas opuestas, decay 2, sin sombras.
-// Altos y sobre la altura de muros: bañan de color los bordes sin quemar cerca.
-const rimCyan = new THREE.PointLight(0x2ad4ff, 95, 0, 2);
+// Muros (E5 parametrizado): paneles verticales con rejilla de detalle, franja de
+// chevrons de advertición abajo (el color viene de la paleta) y zócalo oscuro.
+// 1 tile ≈ 6 × 5 m (repeat 11 × 1).
+function makeWallTex(pal) {
+  return canvasTex(256, (c, S) => {
+    c.fillStyle = pal.wall; c.fillRect(0, 0, S, S);
+    // rejilla sutil en toda la cara
+    c.strokeStyle = `rgba(${pal.wallLite},0.035)`; c.lineWidth = 1;
+    c.beginPath();
+    for (let x = 16; x < S; x += 16) { c.moveTo(x + 0.5, 0); c.lineTo(x + 0.5, S); }
+    for (let y = 16; y < S; y += 16) { c.moveTo(0, y + 0.5); c.lineTo(S, y + 0.5); }
+    c.stroke();
+    // juntas verticales de panel (cada 64 px = ~1.5 m) con filo iluminado
+    [0, 64, 128, 192].forEach(x => {
+      c.fillStyle = pal.dark; c.fillRect(x - 2, 0, 5, S);
+      c.fillStyle = `rgba(${pal.wallLite},0.10)`; c.fillRect(x + 3, 0, 1, S);
+    });
+    // pernos a media altura
+    [32, 96, 160, 224].forEach(x => rivet(c, x, 108, 3));
+    // sombra del borde superior
+    const g = c.createLinearGradient(0, 0, 0, 68);
+    g.addColorStop(0, 'rgba(0,0,0,0.5)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = g; c.fillRect(0, 0, S, 68);
+    // ---- franja de chevrons (paso 32 → envuelve sin costura) ----
+    const BY = S - 88, BH = 54;
+    c.save();
+    c.beginPath(); c.rect(0, BY, S, BH); c.clip();
+    c.fillStyle = pal.chevronBack; c.fillRect(0, BY, S, BH);
+    c.lineCap = 'square';
+    for (let x = -S; x < S * 2; x += 32) {
+      c.strokeStyle = pal.chevron; c.lineWidth = 15;
+      c.beginPath(); c.moveTo(x, BY + BH + 20); c.lineTo(x + BH + 40, BY - 20); c.stroke();
+      c.strokeStyle = pal.chevronLite; c.lineWidth = 3;
+      c.beginPath(); c.moveTo(x, BY + BH + 20); c.lineTo(x + BH + 40, BY - 20); c.stroke();
+    }
+    c.restore();
+    c.fillStyle = pal.dark; c.fillRect(0, BY - 5, S, 5); c.fillRect(0, BY + BH, S, 4);
+    c.fillStyle = pal.chevronLite; c.fillRect(0, BY - 8, S, 2);
+    // zócalo inferior
+    const g2 = c.createLinearGradient(0, S - 34, 0, S);
+    g2.addColorStop(0, 'rgba(2,4,9,0.15)'); g2.addColorStop(1, 'rgba(2,4,9,0.85)');
+    c.fillStyle = g2; c.fillRect(0, S - 34, S, 34);
+    // rayones y mugre
+    for (let i = 0; i < 26; i++) {
+      c.strokeStyle = `rgba(0,0,0,${rand(0.12, 0.3).toFixed(2)})`; c.lineWidth = rand(1, 2.4);
+      const x = rand(0, S), y = rand(0, S - 96), l = rand(6, 34);
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x + rand(-l, l), y + rand(-l * 0.3, l * 0.3)); c.stroke();
+    }
+    specks(c, S, 160, () => Math.random() < 0.6 ? 'rgba(0,0,0,0.10)' : `rgba(${pal.wallLite},0.04)`);
+  }, 11, 1);
+}
+
+// Obstáculos (E5 parametrizado): metal cepillado con bordes achaflanados gastados y
+// esquinas desportilladas (el desgaste vive en los bordes del UV de cada cara).
+function makeObTex(pal) {
+  return canvasTex(256, (c, S) => {
+    c.fillStyle = pal.ob; c.fillRect(0, 0, S, S);
+    for (let i = 0; i < 340; i++) { // cepillado horizontal
+      c.fillStyle = Math.random() < 0.55
+        ? `rgba(${pal.obLite},${rand(0.015, 0.055).toFixed(3)})`
+        : `rgba(0,0,0,${rand(0.02, 0.06).toFixed(3)})`;
+      c.fillRect(0, rand(0, S), S, rand(0.6, 2));
+    }
+    // bisel de aristas: gradientes interior + hilo brillante del chaflán
+    const gl = [c.createLinearGradient(0, 0, 0, 26), c.createLinearGradient(0, S - 26, 0, S),
+                c.createLinearGradient(0, 0, 26, 0), c.createLinearGradient(S - 26, 0, S, 0)];
+    const fills = [`rgba(${pal.obLite},0.10)`, 'rgba(0,0,0,0.38)', `rgba(${pal.noise},0.06)`, 'rgba(0,0,0,0.20)'];
+    gl[0].addColorStop(0, fills[0]); gl[0].addColorStop(1, 'rgba(0,0,0,0)');
+    gl[1].addColorStop(0, 'rgba(0,0,0,0)'); gl[1].addColorStop(1, fills[1]);
+    gl[2].addColorStop(0, fills[2]); gl[2].addColorStop(1, 'rgba(0,0,0,0)');
+    gl[3].addColorStop(0, 'rgba(0,0,0,0)'); gl[3].addColorStop(1, fills[3]);
+    c.fillStyle = gl[0]; c.fillRect(0, 0, S, 26);
+    c.fillStyle = gl[1]; c.fillRect(0, S - 26, S, 26);
+    c.fillStyle = gl[2]; c.fillRect(0, 0, 26, S);
+    c.fillStyle = gl[3]; c.fillRect(S - 26, 0, 26, S);
+    c.strokeStyle = `rgba(${pal.obLite},0.30)`; c.lineWidth = 1; c.strokeRect(0.5, 0.5, S - 1, S - 1);
+    // desgaste de esquinas: manchas claras + picaduras oscuras + rasguños radiales
+    [[14, 14, 1, 1], [S - 14, 14, -1, 1], [14, S - 14, 1, -1], [S - 14, S - 14, -1, -1]].forEach(([cx, cy, sx, sy]) => {
+      for (let i = 0; i < 24; i++) {
+        c.fillStyle = `rgba(${pal.obLite},${rand(0.05, 0.24).toFixed(2)})`;
+        c.beginPath(); c.ellipse(cx + sx * rand(0, 32), cy + sy * rand(0, 32), rand(0.5, 2.6), rand(0.5, 2.2), rand(0, 3.14), 0, 7); c.fill();
+      }
+      for (let i = 0; i < 10; i++) {
+        c.fillStyle = `rgba(8,12,22,${rand(0.15, 0.38).toFixed(2)})`;
+        c.beginPath(); c.arc(cx + sx * rand(0, 28), cy + sy * rand(0, 28), rand(0.4, 1.8), 0, 7); c.fill();
+      }
+      for (let i = 0; i < 5; i++) {
+        c.strokeStyle = `rgba(${pal.obLite},${rand(0.06, 0.16).toFixed(2)})`; c.lineWidth = rand(0.5, 1.2);
+        const a = rand(0.6, 2.2);
+        c.beginPath(); c.moveTo(cx, cy);
+        c.lineTo(cx + Math.cos(a) * sx * rand(10, 36), cy + Math.sin(a) * sy * rand(10, 36)); c.stroke();
+      }
+      rivet(c, cx + sx * 8, cy + sy * 8, 3);
+    });
+    // marca de plantilla central en el neón del nivel
+    c.fillStyle = `rgba(${pal.seam},0.16)`; c.fillRect(104, 116, 48, 8); c.fillRect(104, 130, 26, 8);
+    let bx = 158; while (bx < 186) { const w = rand(1, 2.6); c.fillStyle = `rgba(${pal.noise},${rand(0.08, 0.16).toFixed(2)})`; c.fillRect(bx, 116, w, 22); bx += w + rand(1.5, 3); }
+    specks(c, S, 180, () => Math.random() < 0.5 ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.09)');
+  }, 2, 2);
+}
+
+// rim lights: crecen ACÁ (el rig lo configura configureLights por paleta), decay 2,
+// sin sombras. Altos y sobre la altura de muros: bañan de color los bordes sin quemar.
+sun = new THREE.DirectionalLight(0xbfd8ff, 2.6);
+sun.position.set(18, 30, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -40; sun.shadow.camera.right = 40;
+sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40;
+sun.shadow.camera.far = 90;
+scene.add(sun);
+rimCyan = new THREE.PointLight(0x2ad4ff, 95, 0, 2);
 rimCyan.castShadow = false;
 rimCyan.position.set(-ARENA + 6, 12, -ARENA + 6);
-const rimMagenta = new THREE.PointLight(0xff3bd8, 80, 0, 2);
+rimMagenta = new THREE.PointLight(0xff3bd8, 80, 0, 2);
 rimMagenta.castShadow = false;
 rimMagenta.position.set(ARENA - 6, 12, ARENA - 6);
 scene.add(rimCyan, rimMagenta);
@@ -574,13 +673,13 @@ scene.add(rimCyan, rimMagenta);
    el factor de niebla del material se cuantiza a FOG_BANDS bandas. onBeforeCompile
    reemplaza el chunk fog_fragment por la misma fórmula de three r160 (sigue usando
    los uniforms fogColor/fogDensity que provienen de scene.fog: la atmósfera y el
-   color NO cambian) más un floor(f·niveles)/niveles.
-   Se aplica a todo el material de entorno construido hasta acá —piso, muros, trims,
-   obstáculos, franjas y bulbos—: en este punto de la escena solo viven cielo+estrellas
-   (con fog:false, se saltan) y la arena. Arma, FX, pickups y enemigos sprite (E2) NO
-   se parchan. Ojo r160: el cache de programas NO distingue materiales por su
-   onBeforeCompile, así que customProgramCacheKey aísla esta variante de cualquier
-   material sin parchar que comparta defines. */
+   color NO cambian — y en E5, scene.fog se retoca POR NIVEL en buildArena).
+   E5: ya no se aplica con un scene.traverse de módulo — buildArena parcha el mundo
+   recién construido al final (cielo+estrellas viven con fog:false y se saltan).
+   Arma, FX, pickups y enemigos sprite (E2) NO se parchan. Ojo r160: el cache de
+   programas NO distingue materiales por su onBeforeCompile, así que
+   customProgramCacheKey aísla esta variante de cualquier material sin parchar que
+   comparta defines. */
 const FOG_BANDS = 8; // 8 bandas en todo el rango de la niebla: pasos visibles, aún legible
 function bandedFog(mat) {
   if (!mat || mat.fog === false || mat.userData.bandedFog) return mat;
@@ -600,10 +699,319 @@ function bandedFog(mat) {
   mat.customProgramCacheKey = () => 'bandfog' + FOG_BANDS;
   return mat;
 }
-scene.traverse(o => {
-  if (!o.isMesh) return;
-  (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => bandedFog(m));
-});
+
+/* ============================================================ E5 — sets de geometría por nivel
+   Cada nivel suma SUS props sobre la base común (piso/muros/pilones que arma buildArena).
+   Presupuesto: ≤40 props, geometría/material COMPARTIDO por tipo (patrón E2/E3), y todo
+   recurso del nivel pasa por ownRes() → lo libera el dispose del rebuild. */
+const ownRes = r => (levelRes.push(r), r);
+
+// arte de props billboard (cache PERSISTENTE entre niveles: el tex/geo compartido NO
+// se registra en levelRes — los materiales por nivel sí)
+const PROP_ART = {};
+function propSprite(kind) {
+  if (!PROP_ART[kind]) {
+    const art = makePropSprite(kind);
+    const tex = new THREE.CanvasTexture(art.canvas);
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false; tex.colorSpace = THREE.SRGBColorSpace;
+    PROP_ART[kind] = { tex, geo: new THREE.PlaneGeometry(art.cellW / art.cellH, 1) };
+  }
+  return PROP_ART[kind];
+}
+
+// N1 — pasillo-losa gris+cian: crio-cápsulas como pilares (base metálica + cristal
+// emisivo) y una lámpara que titila (hangar roto).
+function setCriopods(def, obMat) {
+  const baseGeo = ownRes(new THREE.BoxGeometry(1.7, 1.1, 2.7));
+  const glassGeo = ownRes(new THREE.BoxGeometry(1.1, 2.1, 1.9));
+  const capMat = ownRes(new THREE.MeshStandardMaterial({ color: 0x2c3a52, roughness: 0.5, metalness: 0.6 }));
+  const glassMat = ownRes(new THREE.MeshStandardMaterial({
+    color: 0x0a1420, emissive: 0x54f0ff, emissiveIntensity: 0.5, roughness: 0.1, metalness: 0.2,
+    transparent: true, opacity: 0.85 }));
+  for (let i = 0; i < 9; i++) {
+    const x = -21 + (i % 3) * 21 + rand(-2, 2), z = -13 + ((i / 3) | 0) * 13 + rand(-2, 2);
+    if (Math.abs(x) < 9 && z > 16) continue; // pasillo del spawn libre
+    const base = new THREE.Mesh(baseGeo, capMat);
+    base.position.set(x, 0.55, z); base.rotation.y = rand(-0.2, 0.2);
+    addSolid(base);
+    const glass = new THREE.Mesh(glassGeo, glassMat);
+    glass.position.set(x, 2.2, z); glass.rotation.y = base.rotation.y;
+    addSolid(glass); // el cristal también frena balas
+  }
+  const fl = new THREE.PointLight(0xdff0ff, 26, 30, 2);
+  fl.position.set(2, 6, -4);
+  world.add(fl);
+  let flick = 1;
+  levelFx.push((dt) => { // lámpara titilante: picos de corte cada tanto, retorno suave
+    if (Math.random() < dt * 2.2) flick = 0.15 + Math.random() * 0.85;
+    fl.intensity += (26 * flick - fl.intensity) * Math.min(1, dt * 14);
+  });
+}
+
+// N2 — invernadero: enredaderas billboard (makePropSprite 'vine') + charcos magenta
+// emisivos pegados al piso (decals a 0.02 m: sin z-fighting).
+function setInvernadero() {
+  const A = propSprite('vine');
+  const mat = ownRes(new THREE.MeshBasicMaterial({ map: A.tex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
+  let n = 0;
+  for (let i = 0; i < 24 && n < 22; i++, n++) {
+    let x, z;
+    if (i % 3 === 0) { // hileras contra los muros norte/sur
+      x = -26 + i * 2.4 + rand(-1, 1);
+      z = (i % 6 === 0 ? -1 : 1) * (ARENA - 2 - rand(0, 1.5));
+    } else { x = rand(-ARENA + 3, ARENA - 3); z = rand(-ARENA + 3, ARENA - 3); }
+    if (Math.abs(x) < 8 && z > 17) continue;          // spawn
+    if (Math.abs(x) < 11 && z < -ARENA + 15) { i--; continue; } // antesala
+    const v = new THREE.Mesh(A.geo, mat);
+    const s = rand(0.8, 1.7);
+    v.scale.setScalar(s);
+    v.position.set(x, s / 2, z);
+    v.rotation.y = rand(-0.5, 0.5);
+    world.add(v);
+  }
+  const pudMat = ownRes(new THREE.MeshBasicMaterial({ color: neon(0xff3bd8, 1.5), transparent: true, opacity: 0.85, depthWrite: false }));
+  const pudGeo = ownRes(new THREE.CircleGeometry(1, 10));
+  for (let i = 0; i < 6; i++) {
+    const p = new THREE.Mesh(pudGeo, pudMat);
+    p.rotation.x = -Math.PI / 2;
+    p.position.set(rand(-24, 24), 0.02, rand(-22, 20));
+    const s = rand(1.4, 3.2);
+    p.scale.set(s, s, 1);
+    world.add(p);
+  }
+}
+
+// N3 — reactor: lagunas de "lava" emisivas con UV-scroll entre pasarelas metálicas +
+// chispas ambientales (Points propio, lento, NO el pool de combate). OJO: el daño por
+// pisar naranja queda para E6/E8 — acá la lava es visual.
+function setReactor(def, obMat) {
+  const lavaTex = canvasTex(256, (c, S) => {
+    c.fillStyle = '#7c2a07'; c.fillRect(0, 0, S, S);
+    const veins = ['#3f1403', '#b34a10', '#ff7a2a', '#ffc36b', '#2a0c02'];
+    for (let i = 0; i < 30; i++) {
+      c.fillStyle = veins[i % 5];
+      c.globalAlpha = 0.28 + Math.random() * 0.5;
+      c.fillRect(0, rand(0, S), S, rand(2, 9));
+    }
+    c.globalAlpha = 1;
+  }, 3, 6);
+  const lavaMat = ownRes(new THREE.MeshBasicMaterial({ map: lavaTex, color: neon(0xff7a2a, 1.15) }));
+  const lavaGeo = ownRes(new THREE.PlaneGeometry(11, 54));
+  [-19, 0.5, 19.5].forEach(x => {
+    const p = new THREE.Mesh(lavaGeo, lavaMat);
+    p.rotation.x = -Math.PI / 2;
+    p.position.set(x, 0.05, 0);
+    world.add(p);
+  });
+  levelFx.push(dt => { lavaTex.offset.y -= dt * 0.05; }); // magma reptando (UV scroll)
+  const walkGeo = ownRes(new THREE.BoxGeometry(10.5, 0.9, 6)); // pasarelas sobre la lava
+  [[-19, -16], [-19, 14], [0.5, -2], [19.5, -18], [19.5, 10]].forEach(([x, z]) => {
+    const w = new THREE.Mesh(walkGeo, obMat);
+    w.position.set(x, 0.45, z);
+    addSolid(w);
+  });
+  const N = 90;
+  const geo = ownRes(new THREE.BufferGeometry());
+  const pos = new Float32Array(N * 3);
+  const vy = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    pos[i * 3] = [-19, 0.5, 19.5][i % 3] + rand(-5, 5);
+    pos[i * 3 + 1] = rand(0, 6);
+    pos[i * 3 + 2] = rand(-26, 26);
+    vy[i] = rand(0.4, 1.6);
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = ownRes(new THREE.PointsMaterial({ color: neon(0xffb057, 1.8), size: 0.16,
+    transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
+  const pts = new THREE.Points(geo, mat);
+  world.add(pts);
+  levelFx.push(dt => {
+    const a = geo.attributes.position;
+    for (let i = 0; i < N; i++) {
+      let y = a.getY(i) + vy[i] * dt;
+      if (y > 6.5) y = 0.05;
+      a.setY(i, y);
+    }
+    a.needsUpdate = true;
+  });
+}
+
+// N4 — cripta: columnas de piedra low-poly + estatuas billboard ('statue') + brasas
+// violetas. La ambiental va al piso (config de luces) y ESTOS emisivos cargan el mapa.
+function setCripta() {
+  const stoneMat = ownRes(new THREE.MeshStandardMaterial({ color: 0x241f36, roughness: 0.9, metalness: 0.1 }));
+  const colGeo = ownRes(new THREE.CylinderGeometry(0.7, 0.85, 6, 6));
+  const capGeo = ownRes(new THREE.BoxGeometry(2.1, 0.5, 2.1));
+  for (let i = 0; i < 8; i++) {
+    const a = i / 8 * 6.283 + 0.39;
+    const x = Math.cos(a) * 13.5, z = Math.sin(a) * 13.5;
+    const c = new THREE.Mesh(colGeo, stoneMat);
+    c.position.set(x, 3, z);
+    addSolid(c);
+    const cap = new THREE.Mesh(capGeo, stoneMat);
+    cap.position.set(x, 6.2, z);
+    addSolid(cap, false);
+  }
+  const A = propSprite('statue');
+  const mat = ownRes(new THREE.MeshBasicMaterial({ map: A.tex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
+  [[-8, -6], [8, -6], [-8, 6], [8, 6], [-21, 0], [21, 0]].forEach(([x, z]) => {
+    const st = new THREE.Mesh(A.geo, mat);
+    st.scale.setScalar(3.6); // el geo cache mide 1 m de alto
+    st.position.set(x, 1.8, z);
+    st.rotation.y = Math.atan2(-x, -z); // mirando al centro del templo
+    world.add(st);
+  });
+  const flGeo = ownRes(new THREE.BoxGeometry(0.7, 1.5, 0.7));
+  [[-13, -13], [13, -13], [-13, 13], [13, 13]].forEach(([x, z]) => {
+    const fl = new THREE.Mesh(flGeo, ownRes(new THREE.MeshBasicMaterial({ color: neon(0xaa5cff, 2.6) })));
+    fl.position.set(x, 0.75, z);
+    world.add(fl);
+    const pl = new THREE.PointLight(0xaa5cff, 26, 20, 2);
+    pl.position.set(x, 2.2, z);
+    world.add(pl);
+    levelFx.push((dt, t) => { pl.intensity = 26 + Math.sin(t * 5.3 + x) * 7; }); // brasa oscilante
+  });
+}
+
+// N5 — núcleo: cubos flotantes que rotan (props animados por levelFx) sobre la losa
+// Tron; el cielo "código" lo arma buildSky (def.sky.code).
+function setNucleo() {
+  const cubeMat = ownRes(new THREE.MeshStandardMaterial({
+    color: 0x071426, emissive: 0x1899cc, emissiveIntensity: 0.85, roughness: 0.35, metalness: 0.7 }));
+  const cubes = [];
+  for (let i = 0; i < 12; i++) {
+    const s = rand(1.2, 2.8);
+    const m = new THREE.Mesh(ownRes(new THREE.BoxGeometry(s, s, s)), cubeMat);
+    m.position.set(rand(-25, 25), rand(3.5, 9), rand(-25, 20));
+    m.castShadow = false;
+    world.add(m);
+    cubes.push({ m, spin: rand(0.15, 0.5) * (Math.random() < 0.5 ? -1 : 1), bob: rand(0, 6.28), y0: m.position.y });
+  }
+  levelFx.push((dt, t) => {
+    for (const c of cubes) {
+      c.m.rotation.y += c.spin * dt;
+      c.m.rotation.x += c.spin * 0.35 * dt;
+      c.m.position.y = c.y0 + Math.sin(t * 0.7 + c.bob) * 0.5;
+    }
+  });
+}
+
+// layout de cajas procedural CON SEMILLA (el del arena madre, ahora por nivel):
+// rejilla 5×5 con jitter; libre el pasillo del spawn (sur) y la antesala del portal (norte)
+function makeLayout(rng, n) {
+  const out = [];
+  for (let tries = 0; tries < n * 8 && out.length < n; tries++) {
+    const gx = ((rng() * 5) | 0) * 12 - 24, gz = ((rng() * 5) | 0) * 12 - 24;
+    const x = gx + (rng() * 6 - 3), z = gz + (rng() * 6 - 3);
+    const w = 2.5 + rng() * 5, d = 2.5 + rng() * 5, h = 1.6 + rng() * 4.4;
+    if (Math.abs(x) + w / 2 < 9 && z > 17) continue;
+    if (Math.abs(x) + w / 2 < 11 && z < -ARENA + 15) continue;
+    if (out.some(o => Math.abs(o.x - x) < (o.w + w) / 2 + 2 && Math.abs(o.z - z) < (o.d + d) / 2 + 2)) continue;
+    out.push({ x, z, w, h, d });
+  }
+  return out;
+}
+
+// antesala del portal (norte): dos pilares haciendo de puertas + guía emisiva al piso
+function buildAntechamber(def, obMat) {
+  const g = ownRes(new THREE.BoxGeometry(2.2, WALL_H + 1, 2.2));
+  [[-7, -ARENA + 6], [7, -ARENA + 6]].forEach(([x, z]) => {
+    const p = new THREE.Mesh(g, obMat);
+    p.position.set(x, (WALL_H + 1) / 2, z);
+    addSolid(p);
+  });
+  const strip = new THREE.Mesh(ownRes(new THREE.BoxGeometry(12, 0.12, 0.5)),
+    ownRes(new THREE.MeshBasicMaterial({ color: neon(def.pal.neon, 2.2) })));
+  strip.position.set(0, 0.03, -ARENA + 3);
+  world.add(strip);
+}
+
+// destructor del nivel anterior: libera TODO lo registrado (geos, mats, texturas, PMREM).
+// Los caches compartidos (starMat, PROP_ART, arte de enemigos/pickups/viewmodel) NO están
+// en levelRes: sobreviven al rebuild a propósito, como en E2/E3.
+function disposeWorld() {
+  for (const r of levelRes) { try { r.dispose(); } catch (e) { /* ya liberado */ } }
+  levelRes = [];
+  levelFx = [];
+  portalMesh = null;
+  world.clear(); // los meshes/luces del nivel salen de la escena (FX y viewmodel no viven acá)
+  solids.length = 0;
+  boxes.length = 0;
+}
+
+// EL constructor de mapa: se llama en cada arranque de nivel (y en el boot). Con
+// disposeWorld() primero, la escena se regenera sin leak entre sectores.
+function buildArena(def) {
+  disposeWorld();
+  const pal = def.pal;
+  scene.background = new THREE.Color(def.bg);
+  scene.fog.color.set(def.fog.color);
+  scene.fog.density = def.fog.density;
+  configureLights(def);
+  buildSky(def);
+
+  const floorMat = ownRes(new THREE.MeshStandardMaterial({ map: makeFloorTex(pal, def.seamK || 1), roughness: 0.7, metalness: 0.32, envMapIntensity: 0.35 }));
+  const floor = new THREE.Mesh(ownRes(new THREE.PlaneGeometry(ARENA * 2, ARENA * 2)), floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  world.add(floor);
+
+  const wallMat = ownRes(new THREE.MeshStandardMaterial({ map: makeWallTex(pal), roughness: 0.8, metalness: 0.35, envMapIntensity: 0.3 }));
+  const trimMat = ownRes(new THREE.MeshBasicMaterial({ color: neon(pal.neon, def.trimK || 1.55) })); // N4 sube trimK: filo más HDR con la ambiental muerta
+  const wallGeo = ownRes(new THREE.BoxGeometry(1, WALL_H, 1)); // caja unitaria escalada: 1 geo para los 4 muros
+  [[0, -ARENA - 0.5, ARENA * 2 + 2, 1], [0, ARENA + 0.5, ARENA * 2 + 2, 1],
+   [-ARENA - 0.5, 0, 1, ARENA * 2 + 2], [ARENA + 0.5, 0, 1, ARENA * 2 + 2]].forEach(([x, z, w, d]) => {
+    const wall = new THREE.Mesh(wallGeo, wallMat);
+    wall.scale.set(w, 1, d);
+    wall.position.set(x, WALL_H / 2, z);
+    addSolid(wall, false); // colisión con límites se hace por clamp (setFromObject respeta el scale)
+    const trim = new THREE.Mesh(wallGeo, trimMat);
+    trim.scale.set(w * 0.995, 0.07, d * 0.995);
+    trim.position.set(x, WALL_H - 0.35, z);
+    world.add(trim);
+  });
+
+  const rng = mulberry32(def.seed);
+  const obMat = ownRes(new THREE.MeshStandardMaterial({ map: makeObTex(pal), roughness: 0.55, metalness: 0.45, envMapIntensity: 0.55 }));
+  makeLayout(rng, 12).forEach(({ x, z, w, h, d }, i) => {
+    const b = new THREE.Mesh(ownRes(new THREE.BoxGeometry(w, h, d)), obMat);
+    b.position.set(x, h / 2, z);
+    addSolid(b);
+    if (i % 3 === 0) { // franja neón HDR encima de algunos bloques: canal oscuro + núcleo bloom
+      const ch = new THREE.Mesh(ownRes(new THREE.BoxGeometry(w * 0.88, 0.1, d * 0.88)),
+        ownRes(new THREE.MeshStandardMaterial({ color: 0x070b14, roughness: 0.4, metalness: 0.6 })));
+      ch.position.set(x, h - 0.01, z);
+      addSolid(ch, false);
+      const glow = new THREE.Mesh(ownRes(new THREE.BoxGeometry(w * 0.8, 0.06, d * 0.8)),
+        ownRes(new THREE.MeshBasicMaterial({ color: neon(i % 2 ? 0xff4d5e : pal.neon, 2.1) })));
+      glow.position.set(x, h + 0.05, z);
+      world.add(glow);
+    }
+  });
+
+  const pylonGeo = ownRes(new THREE.CylinderGeometry(0.25, 0.35, WALL_H + 1.5, 8));
+  const bulbGeo = ownRes(new THREE.SphereGeometry(0.42, 12, 12));
+  const bulbMat = ownRes(new THREE.MeshBasicMaterial({ color: neon(pal.neon, 2.1) }));
+  [[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(([sx, sz]) => {
+    const p = new THREE.Mesh(pylonGeo, obMat);
+    p.position.set(sx * (ARENA - 2), (WALL_H + 1.5) / 2, sz * (ARENA - 2));
+    addSolid(p);
+    const bulb = new THREE.Mesh(bulbGeo, bulbMat);
+    bulb.position.set(sx * (ARENA - 2), WALL_H + 1.7, sz * (ARENA - 2));
+    world.add(bulb);
+    const pl = new THREE.PointLight(pal.neon, 30, 26, 2);
+    pl.position.copy(bulb.position);
+    world.add(pl);
+  });
+
+  def.set(def, obMat, rng); // props característicos del sector (≤40)
+  buildAntechamber(def, obMat);
+
+  world.traverse(o => { // banded fog del E1 sobre TODO el entorno recién construido
+    if (o.isMesh) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => bandedFog(m));
+  });
+}
 
 /* ============================================================ recursos (E3) — spec DESIGN_ARSENAL.md
    Arquitectura pensada para que E4 enchufe las 10 armas sin tocar el sistema:
@@ -1057,6 +1465,9 @@ const enemyHitboxes = []; // mallas invisibles para raycast
 const TINT_NORMAL = new THREE.Color(1, 1, 1);
 const TINT_BURN   = new THREE.Color(1.5, 0.55, 0.22); // naranja HDR: el bloom lo hace lucir
 const TINT_SCORCH = new THREE.Color(0.40, 0.36, 0.42); // E4b "scorched" (compilador): tinte
+// E5: el mini-jefe NUNCA vuelve a 1.0 — su "normal" es un HDR suave (1.45) que el bloom
+// lee como glow permanente; el anillo del piso completa el aura.
+const TINT_BOSS   = new THREE.Color(1.45, 1.45, 1.45);
 // oscuro SUB-1 — el sprite se apaga y el bloom lo suelta. A diferencia del quemado no
 // hace DoT y el fuego manda: update() elige el tinte por prioridad burn > scorch > normal.
 
@@ -1089,11 +1500,17 @@ function enemySprite(type) {
 }
 
 class Enemy {
-  constructor(type, pos) {
-    const T = ENEMY_TYPES[type];
+  // E5 — boss=true: MINI-JEFE elite sobre un tipo existente (scale ×2.2, hp ×6, aura
+  // emisiva anillo en el piso que late, sprite levemente HDR). score ×12. E6 va a
+  // reemplazar los tipos por jefes con conducta propia: la firma (type,pos,boss) queda.
+  constructor(type, pos, boss = false) {
+    this.boss = boss;
+    let T = ENEMY_TYPES[type];
+    if (boss) T = Object.assign({}, T, { hp: T.hp * 6, scale: T.scale * 2.2, speed: T.speed * 0.85, score: T.score * 12, dmg: Math.round(T.dmg * 1.35) });
     this.type = type; this.T = T;
-    this.hp = T.hp * (1 + 0.14 * (game.wave - 1));
-    this.speed = T.speed * (1 + 0.03 * (game.wave - 1)) * rand(0.9, 1.1);
+    const mult = diffMult(); // 1 + 0.25·(nivel-1): todo el mapa sube de dificultad por sector
+    this.hp = T.hp * (1 + 0.14 * (game.wave - 1)) * mult;
+    this.speed = T.speed * (1 + 0.03 * (game.wave - 1)) * (1 + 0.08 * (game.level - 1)) * rand(0.9, 1.1);
     this.hitCd = 0; this.phase = rand(0, 6.28); this.spawnT = 0;
     this.lastScr = null; // E8-polish(a): última posición en pantalla con el enemigo visible
     this.burnT = 0;      // E4a: segundos de estado QUEMADO (asador); DoT fraccional
@@ -1107,11 +1524,20 @@ class Enemy {
       map: this.tex, transparent: true, alphaTest: 0.5, depthWrite: true,
       side: THREE.DoubleSide,
     }));
+    if (boss) this.spr.material.color.setScalar(1.45); // aura ALSO tiñe el sprite (HDR suave: glow por bloom)
     this.spr.position.y = 0.1; // el plano cubre local -1.05..1.25 ⊃ hitbox (-0.75..1.15)
     this.g = new THREE.Group();
     this.g.scale.setScalar(0.01);
     this.baseY = (0.95 + T.scale * 0.25) * T.scale;
     this.g.add(this.spr);
+    if (boss) { // anillo base: la firma visual del elite (late en update)
+      this.aura = new THREE.Mesh(
+        new THREE.RingGeometry(0.85, 1.15, 24).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: neon(T.color, 2.4), transparent: true,
+          opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }));
+      this.aura.position.y = -this.baseY / T.scale + 0.08; // pispa el suelo real del grupo
+      this.g.add(this.aura);
+    }
 
     this.hitbox = new THREE.Mesh(hitGeo, new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }));
     this.hitbox.userData.enemy = this;
@@ -1157,21 +1583,24 @@ class Enemy {
   }
   die() {
     Sfx.kill();
+    if (this.boss) Sfx.explosion(); // el elite se apaga con boom, no con el blip normal
     game.score += this.T.score; game.kills++;
     // E8-polish(a): el "+100 DRONER" ya NO sube al killfeed arriba a la derecha — es un
     // popup anclado a la proyección en pantalla del pecho del enemigo (o a su última
     // posición visible si murió de espaldas). El killfeed queda para oleadas/avisos.
     killPopup(`+${this.T.score} ${this.type.toUpperCase()}`,
       this.chest(_popV), this.lastScr, this.T.color);
-    rollKillDrop(this.g.position, this.type); // E3: drops por kill (brute garantiza)
-    burst(this.g.position, this.T.color, 22, 9, 1.2, 1.7);
-    popFxLight(this.g.position, this.T.color, 150, 0.38); // flash momentáneo desde el pool
+    rollKillDrop(this.g.position, this.type, this.boss); // E3: drops (el boss garantiza casco)
+    burst(this.g.position, this.T.color, this.boss ? 44 : 22, this.boss ? 12 : 9, this.boss ? 2 : 1.2, 1.7);
+    popFxLight(this.g.position, this.T.color, this.boss ? 320 : 150, 0.38); // flash momentáneo desde el pool
     this.remove();
+    if (this.boss) onBossKilled(this); // E5: abre el portal (guardado por game.portalOpen)
   }
   // punto "pecho" para el popup de score (centro alto del billboard)
   chest(out) { return out.set(this.g.position.x, this.g.position.y + 0.8, this.g.position.z); }
   remove() {
     scene.remove(this.g);
+    if (this.aura) { this.aura.geometry.dispose(); this.aura.material.dispose(); } // geo/mat del elite son propios
     const i = enemies.indexOf(this); if (i >= 0) enemies.splice(i, 1);
     const j = enemyHitboxes.indexOf(this.hitbox); if (j >= 0) enemyHitboxes.splice(j, 1);
   }
@@ -1199,8 +1628,9 @@ class Enemy {
     // hierve y queda oscuro al apagarse el fuego). Sin burn ni scorch esto es idéntico al
     // "decay to 1" del E2: el único escritor del color sigue siendo este lerp.
     this.spr.material.color.lerp(
-      this.burnT > 0 ? TINT_BURN : this.scorchT > 0 ? TINT_SCORCH : TINT_NORMAL,
+      this.burnT > 0 ? TINT_BURN : this.scorchT > 0 ? TINT_SCORCH : (this.boss ? TINT_BOSS : TINT_NORMAL),
       Math.min(1, dt * 5));
+    if (this.aura) this.aura.scale.setScalar(1 + Math.sin(t * 4 + this.phase) * 0.12); // E5: aura latiendo
 
     const p = this.g.position;
     _eDir.set(player.pos.x - p.x, 0, player.pos.z - p.z);
@@ -1352,7 +1782,16 @@ function pickupPoint() {
 // células 20 y le cede un 10% a la botiquín chico — así cartuchos (changó/MORIS-12) y
 // células (asador/mate/riel) son alcanzables SIN el debug ?weapons=all: E5 puede colocar
 // armas desde el nivel 1 y la economía de drops ya tiene de dónde responder.
-function rollKillDrop(pos, type) {
+// E5: MINI-JEFE (boss=true) garantiza CASCO (+35, spec DESIGN_ARSENAL), un crate y un
+// botiquín — y NUNCA el arma: esa va en la antesala del portal (no te la podés perder).
+function rollKillDrop(pos, type, boss = false) {
+  if (boss) {
+    spawnPickup('armorHelm', pos, 0);
+    spawnPickup('ammoGrande', pickupPoint(), 0);
+    spawnPickup('medbox', pickupPoint(), 0);
+    trimDrops();
+    return;
+  }
   let kind;
   if (type === 'brute') {
     // BRUTE garantiza y alterna cada 2: crate de BALAS (se mantiene simple, como pide el
@@ -1460,7 +1899,7 @@ function toast(text, cls) {
   setTimeout(() => d.remove(), 1650);
 }
 
-/* ---- hint "SIN MUNICIÓN": 2 s, una vez por oleada (flag reset en startWave) ---- */
+/* ---- hint "SIN MUNICIÓN": 2 s, una vez por oleada (flag reset en startLevelWave) ---- */
 let ammoHintTimer = null;
 function showAmmoHint() {
   if (game.ammoHint) return;
@@ -1531,17 +1970,63 @@ function pushOutOfBoxes(p, radius) {
   }
 }
 
-/* ============================================================ game state */
+/* ============================================================ game state (E5: campaña) */
 const game = {
-  state: 'menu',           // menu | play | pause | dead
-  wave: 1, score: 0, kills: 0,
+  state: 'menu',           // menu | play | pause | dead | terminal (E5: overlay MORIS-9)
+  wave: 1,                 // Nº GLOBAL de oleada (la fórmula vieja de hp/velocidad sigue acá)
+  waveIn: 1,               // oleada DENTRO del nivel — la que muestra el HUD "n/total"
+  level: 1,                // sector 1..5 (fila de LEVELS)
+  lives: 3,                // "SECTORES REINICIADOS" (spec DESIGN_ARSENAL)
+  boss: false,             // mini-jefe elite en pie
+  bossPending: false,      // oleadas completas: el elite aún no pisó la arena
+  bossDelay: 0,            // respiro tras el "regalo de MORIS" (compilador en N5) antes del elite
+  bossGuard: false,        // onBossKilled corre una sola vez por nivel
+  portalOpen: false, portalPending: false, midSpawned: false,
+  respawnPending: false,       // muerte con vidas: el respawn se aplica al cerrar el loop de enemigos
   spawnQueue: [], spawnT: 0,
   intermission: 0,
+  score: 0, kills: 0,      // score TOTAL de la campaña (persiste entre sectores)
   ammoHint: false,         // E3: hint "SIN MUNICIÓN" ya mostrado en esta oleada
   time: 0,
 };
 let best = parseInt(localStorage.getItem('moris-shooter-best') || '0', 10);
 $('bestmenu').textContent = best;
+const LIVES_MAX = 3;
+
+/* ---- save de campaña (localStorage "moris-campaign"): checkpoint por sector para el
+   retry de la muerte definitiva (spec E5: retoma en el LEVEL actual con armas
+   conservadas). Se escribe al empezar cada sector (snapshot limpio) y se refresca al
+   desbloquear un arma; el retry reparte pools con piso de balas (la vecinal dispara
+    siempre). "NUEVA PARTIDA" lo borra. La vida/oleada NO se guardan: retry = oleada 1
+   del sector, como en Doom. ---- */
+const SAVE_KEY = 'moris-campaign';
+function saveCampaign() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      v: 1, level: game.level, score: game.score, kills: game.kills,
+      owned: [...player.owned],
+      pools: Object.fromEntries(Object.entries(player.pools).map(([k, p]) => [k, p.n])),
+    }));
+  } catch (e) { /* storage lleno/inaccesible: la campaña sigue jugable, sin checkpoint */ }
+}
+function loadCampaign() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
+    if (!s || !(s.level >= 1 && s.level <= LEVELS.length)) return null;
+    const owned = [...new Set((Array.isArray(s.owned) ? s.owned : []).filter(id => WEAPONS[id]))];
+    if (!owned.includes('fists') || !owned.includes('rifle')) owned.push('fists', 'rifle');
+    return { level: s.level | 0, score: s.score | 0, kills: s.kills | 0, owned,
+             pools: s.pools && typeof s.pools === 'object' ? s.pools : {} };
+  } catch (e) { return null; }
+}
+function clearCampaign() { try { localStorage.removeItem(SAVE_KEY); } catch (e) {} }
+function refreshContinueBtn() {
+  const s = loadCampaign();
+  const b = $('contbtn');
+  if (!b) return;
+  b.style.display = s ? '' : 'none';
+  b.textContent = `CONTINUAR SECTOR ${s ? s.level : 1} · ${s ? LEVELS[s.level - 1].name : ''}`;
+}
 
 function buildWave(n) {
   const total = Math.min(5 + 2 * n, 26);
@@ -1569,49 +2054,111 @@ function spawnPoint() {
   return new THREE.Vector3(rand(-ARENA + 4, ARENA - 4), 0, rand(-ARENA + 4, ARENA - 4));
 }
 
-function startWave(n) {
-  game.wave = n;
+/* ---- oleadas POR NIVEL: LEVELS[].waves manda; game.wave sigue siendo el contador
+   GLOBAL (escala de hp/velocidad del Enemy intacta) sobre el que se suma diffMult().
+   HUD: "OLEADA n/total". El número global solo lo lee la fórmula de dificultad. ---- */
+function startLevelWave(i) {
+  const total = levelDef().waves;
+  game.waveIn = clamp(i, 1, total);
+  game.wave = waveBaseFor(game.level - 1) + game.waveIn;
   game.intermission = 0;
+  game.bossPending = false;
   game.ammoHint = false; // el hint de munición vuelve a poder aparecer una vez
-  game.spawnQueue = buildWave(n);
+  game.spawnQueue = buildWave(game.wave);
   game.spawnT = 0;
-  spawnWavePickups(n); // E3: cajas de recurso repartidas por la arena al arrancar
-  $('wave').textContent = n;
+  spawnWavePickups(game.waveIn); // E3: cajas de recurso (la tabla mira la oleada del nivel)
+  $('wave').textContent = `${game.waveIn}/${total}`;
   const msg = $('wavemsg');
-  msg.textContent = `OLEADA ${n}`;
+  msg.textContent = `OLEADA ${game.waveIn}/${total}`;
   msg.classList.remove('show'); void msg.offsetWidth; msg.classList.add('show');
   Sfx.wave();
+  updateHud();
 }
 
-function resetGame() {
+// mini-jefe del sector: elite sobre un tipo existente (E6 los tendrá con conducta propia)
+const BOSS_TYPE = ['droner', 'sprinter', 'brute', 'brute', 'brute'];
+function spawnBoss() {
+  game.boss = true;
+  game.bossGuard = false;
+  new Enemy(BOSS_TYPE[game.level - 1] || 'brute', spawnPoint(), true);
+  const msg = $('wavemsg');
+  msg.textContent = 'MINI-JEFE';
+  msg.classList.remove('show'); void msg.offsetWidth; msg.classList.add('show');
+  feed(`SECTOR ${game.level}: MINI-JEFE DETECTADO`);
+  Sfx.bossSpawn();
+  updateHud();
+}
+
+// fin de oleada: bonus, siguiente oleada / regalo del guion ("te lo da MORIS") / elite
+function onWaveCleared() {
+  const d = levelDef();
+  const bonus = 200 * game.waveIn;
+  game.score += bonus;
+  feed(`OLEADA COMPLETA +${bonus}`);
+  if (game.waveIn < d.waves) game.intermission = 3.2;
+  else if (d.weapons && d.weapons.mid && !game.midSpawned) {
+    // N5: el Compilador cae tras las oleadas, antes del jefe — "la da MORIS-9" (traicionera)
+    game.midSpawned = true;
+    spawnWeaponPickup(d.weapons.mid, pickupPoint());
+    feed('MORIS-9 TE PASA UN REGALO: EL COMPILADOR');
+    toast('REGALO DE MORIS: COMPILADOR', 'weapon big');
+    game.bossDelay = 5; // tiempo de verlo caer antes de que entre el elite
+  } else game.bossPending = true;
+  updateHud();
+}
+
+// limpieza de combate común a arranque de sector y respawn (Nada volando entre niveles:
+// cohetes/células/orbes/rayos/casas fuera — hotfix E4a: el reset no puede dejar proyectiles huérfanos)
+function resetArenaCombat() {
   while (enemies.length) enemies[0].remove();
-  clearPickups();          // E3: nada de cajas de la partida anterior en la arena
-  bruteKills = 0;
-  Object.assign(player, startResources(), { // hp100 / armor0 / owned / mags / pools iniciales
+  clearPickups();
+  clearRockets(); clearCells(); clearOrbs(); clearBeams();
+  cancelRailCharge();
+  portalMesh = null; // el mesh vive en world: lo libera disposeWorld del próximo build
+}
+// puntería/cadencia/cámara a cero + spawn point del nivel (sur, mirando al centro)
+function resetCombatState() {
+  Object.assign(player, {
     yaw: 0, pitch: 0,
     reloading: 0, dryT: 0,
     recoilPitch: 0, heat: 0, fireCd: 0, lastHitT: -99, sprintCd: 0, sprintT: 0,
-    cooling: 0, vmKick: 0, lastShotT: -9, // E4a: estado de arsenal/calor a cero
-    jumpQueued: false,
+    cooling: 0, vmKick: 0, lastShotT: -9, jumpQueued: false,
+    twinNext: 0, twinT: 0, shakeT: 0, chargeT: 0,
   });
-  // E4a: la troca volvió al arranque (fists+vecinal) → cohetes fuera del aire, slot
-  // bar y crosshair se reconstruyen (lastOwnedN=-1 fuerza rebuild en updateHud) y el
-  // viewmodel salta a la vecinal.
-  clearRockets();
-  clearCells();  // E4b: células de Mate fuera del aire
-  clearOrbs();   // E4b: orbes del compilador tampoco sobreviven a la partida
-  clearBeams();  // E4b: líneas del riel
-  cancelRailCharge();
-  player.twinNext = 0; player.twinT = 0; player.shakeT = 0; // E4b: promesas/pendientes a cero
+  $('ammo').classList.remove('reloading');
+  viewYaw = viewPitch = 0; // sin barrido de cámara al reaparecer
+  player.pos.set(0, EYE, 28);
+  player.vel.set(0, 0, 0);
+}
+// HARD (partida nueva): recursos del arranque (fists+vecinal, 120 balas) — el viejo resetGame
+function resetGame() {
+  resetArenaCombat();
+  bruteKills = 0;
+  Object.assign(player, startResources()); // hp100 / armor0 / owned / mags / pools iniciales
+  resetCombatState();
+  // la troca volvió al arranque (fists+vecinal): slot bar y crosshair se reconstruyen
+  // (lastOwnedN=-1 fuerza rebuild en updateHud) y el viewmodel salta a la vecinal.
   lastOwnedN = -1;
   applyCrosshair(player.weaponId);
   applyViewModel(player.weaponId);
   updateTouchSwap();
-  viewYaw = viewPitch = 0; // sin barrido de cámara al reaparecer
-  player.pos.set(0, EYE, 28);
-  player.vel.set(0, 0, 0);
-  Object.assign(game, { score: 0, kills: 0, wave: 0, spawnQueue: [], intermission: 1.2, time: 0, ammoHint: false });
-  $('ammo').classList.remove('reloading');
+  Object.assign(game, { score: 0, kills: 0, wave: 0, waveIn: 0, spawnQueue: [], intermission: 0,
+                        time: 0, ammoHint: false });
+  updateHud();
+}
+// SOFT (E5): respawn por vidas y arranque de sector. EL FIX PEDIDO: el reset CONSERVA
+// owned (el resetGame hard limpiaba el arsenal) y cargadores; pools a la MITAD solo en
+// la muerte (halvePools). hp100/armor0 siempre — spec DESIGN_ARSENAL "muerte".
+function resetSOFT(halvePools = true) {
+  resetArenaCombat();
+  player.hp = 100; player.armor = 0;
+  for (const id of Object.keys(player.mags))
+    if (player.owned.has(id) && WEAPONS[id].magSize > 0) player.mags[id] = WEAPONS[id].magSize;
+  if (halvePools) for (const k in player.pools) player.pools[k].n = Math.floor(player.pools[k].n * 0.5);
+  if (!player.owned.has(player.weaponId)) player.weaponId = 'rifle';
+  resetCombatState();
+  applyCrosshair(player.weaponId);
+  applyViewModel(player.weaponId);
   updateHud();
 }
 
@@ -1636,6 +2183,22 @@ function damagePlayer(d) {
 let dmgFlash = 0, hitmarkT = 0;
 
 function die() {
+  /* E5 — VIDAS: con vidas, "SECTOR REINICIADO": respawn en el spawn point del nivel con
+     hp100/armor0/mags llenos/pools a la mitad (resetSOFT — owned INTACTO, hotfix pedido)
+     y la oleada actual reiniciada. Sin vidas: game over definitivo (pantalla + botón de
+     nueva partida que borra el save). El pointer lock NO se suelta: seguimos en play. */
+  if (game.respawnPending) return; // ya morimos este frame (dos contactos simultáneos)
+  if (game.lives > 0) {
+    game.lives--;
+    Sfx.death();
+    // OJO: die() puede dispararse DESDE el loop de enemigos (daño por contacto) y el
+    // respawn splicearía `enemies` a mitad de recorrido. Se difiere un frame:
+    // respawnPending lo consume update() justo después de ese loop. hp a 1 tapa una
+    // segunda muerte en el mismo frame (el respawn real pone 100).
+    game.respawnPending = true;
+    player.hp = 1;
+    return;
+  }
   game.state = 'dead';
   Sfx.death();
   clearRockets(); // E4a: cohetes en vuelo no sobreviven a la partida (no explotan en el menú)
@@ -1645,14 +2208,28 @@ function die() {
   cancelRailCharge(); // E4b: el anillo del riel no queda encendido sobre la pantalla de muerte
   document.exitPointerLock();
   dispatchEvent(new CustomEvent('gamestate', { detail: game.state })); // suelta input táctil
-  if (game.score > best) { best = game.score; localStorage.setItem('moris-shooter-best', best); }
+  // E5: el best solo se canta con CAMPAÑA COMPLETA (campaignComplete); acá se muestra.
   $('finalscore').textContent = game.score;
-  $('finalwave').textContent = game.wave;
+  $('finalsector').textContent = `${game.level} · ${levelDef().name}`;
+  $('finalwave').textContent = `${game.waveIn}/${levelDef().waves}`;
   $('finalkills').textContent = game.kills;
   $('bestdead').textContent = best; $('bestmenu').textContent = best;
+  $('deadtitle').textContent = 'ELIMINADO';
+  $('retrycta').textContent = 'CLIC PARA REINTENTAR SECTOR';
   $('hud').classList.add('hidden');
   $('touchhud').classList.add('hidden');
   $('dead').classList.remove('hidden');
+}
+
+// respawn por vidas — diferido por die(): correr LO QUE SIGUE al loop de enemigos de
+// update(), cuando ninguna iteración activa está pisando `enemies`/pools de proyectiles.
+function doRespawn() {
+  Sfx.respawn();
+  resetSOFT(true);
+  startLevelWave(game.waveIn); // la misma oleada del nivel, de cero
+  feed(`SECTOR REINICIADO — ${game.lives} ${game.lives === 1 ? 'vida' : 'vidas'} restantes`);
+  toast('SECTOR REINICIADO', 'weapon big');
+  updateHud();
 }
 
 function feed(text) {
@@ -1662,6 +2239,201 @@ function feed(text) {
   kf.appendChild(d);
   while (kf.children.length > 4) kf.removeChild(kf.firstChild);
   setTimeout(() => { d.classList.add('dying'); setTimeout(() => d.remove(), 1100); }, 2200);
+}
+
+/* ============================================================ E5 — flujo de campaña
+   oleadas → MINI-JEFE → PORTAL (antesala norte) → terminal MORIS-9 → sector siguiente.
+   Muerte definitiva → retry desde el checkpoint (moris-campaign). El guion pleno del
+   terminal es E7: hoy se tipea título + subtítulo de la tabla + "...". Todo el flujo
+   funciona con touch/mando: el portal se dispara PISÁNDOLO (caminar ya está mapeado)
+   y el terminal avanza con tap/clic o A/Start (ver pollGamepad). */
+let portalMesh = null; // el mesh vive en world: disposeWorld lo libera con el nivel
+let portalCd = 0;      // un solo disparo por visita al umbral
+
+// puerta del sector: plano emisivo vertical que rota + luz + chispas + sonido.
+function spawnPortal() {
+  const pal = levelDef().pal;
+  const mat = new THREE.MeshBasicMaterial({ color: neon(pal.neon, 2.6), transparent: true,
+    opacity: 0.9, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 4.6), mat);
+  mesh.position.set(0, 2.3, -ARENA + 4.5);
+  world.add(mesh);
+  levelRes.push(mat, mesh.geometry); // si la partida se corta, el portal se va con el nivel
+  portalMesh = mesh;
+  const pl = new THREE.PointLight(pal.neon, 60, 24, 2);
+  pl.position.set(0, 2.3, -ARENA + 5.5);
+  world.add(pl);
+  levelFx.push((dt, t) => {
+    mesh.rotation.y = t * 1.4;
+    mat.opacity = 0.66 + Math.sin(t * 6) * 0.2;
+    if (Math.random() < dt * 6) burst(mesh.position, pal.neon, 2, 2, 0.6, 1.8);
+  });
+  game.portalOpen = true;
+  Sfx.portal();
+  feed('ASCENSOR ABIERTO — PORTAL AL NORTE');
+}
+
+// el elite murió: rollKillDrop(boss) tiró el casco + crate + botiquín; ahora abren la
+// salida y el arma del guion espera en la ANTESALA, antes del portal (no te la perdés).
+function onBossKilled() {
+  if (game.bossGuard) return;
+  game.bossGuard = true;
+  game.boss = false;
+  const d = levelDef();
+  const exitW = d.weapons && d.weapons.exit;
+  if (exitW) {
+    spawnWeaponPickup(exitW, new THREE.Vector3(3.2, 0, -ARENA + 8));
+    feed(`SEÑAL: ${WEAPONS[exitW].name} EN LA ANTESALA`);
+  }
+  spawnPortal();
+  toast(game.level === LEVELS.length ? 'MORIS-9 CAE — PISÁ EL PORTAL' : 'MINI-JEFE ELIMINADO', 'weapon big');
+}
+
+// pisar el umbral: último sector = final de campaña; si no, terminal y sector siguiente
+function portalTick(dt) {
+  if (portalCd > 0) return;
+  if (!game.portalOpen || game.state !== 'play') return;
+  const dx = player.pos.x, dz = player.pos.z + ARENA - 4.5;
+  if (dx * dx + dz * dz > 2.2 * 2.2) return;
+  portalCd = 1;
+  if (game.level >= LEVELS.length) { campaignComplete(); return; }
+  game.portalPending = true;
+  const nl = LEVELS[game.level]; // el siguiente (índice 0-based = game.level)
+  showTerminal([
+    `> sector ${game.level} ${levelDef().name}: DESHEREDADO. bien.`,
+    `> descender al sector ${nl.id}. firmar con la sangre que haya.`,
+    ``,
+    `SECTOR ${nl.id}: ${nl.name}`,
+    `"${nl.subtitle}"`,
+    `...`,
+  ], () => { beginLevel(game.level + 1); lockAndPlay(); });
+}
+
+/* ---- overlay terminal (transiciones MORIS-9): fondo negro, verde fósforo tipeado a
+   ~16 ms/char con tick de teletipo. Tap/clic o A/Start: primer toque vuela el tipeo,
+   el segundo cierra y corre el callback. E7 enchufa el guion completo (más líneas y
+   sonido) pasando otro array a showTerminal — la máquina no cambia. ---- */
+let termQueue = [], termFull = '', termBuf = '', termShown = false, termCb = null,
+    termTimer = null, termTick = 0;
+function showTerminal(lines, cb) {
+  termQueue = lines.slice();
+  termFull = lines.join('\n') + '\n';
+  termBuf = '';
+  termShown = false;
+  termCb = cb || null;
+  $('termwrap').textContent = '';
+  $('terminal').classList.remove('hidden');
+  const was = game.state;
+  game.state = 'terminal';
+  if (was !== 'terminal') dispatchEvent(new CustomEvent('gamestate', { detail: 'terminal' })); // suelta touch/firing
+  document.exitPointerLock(); // con el lock activo el clic iría al canvas, no al overlay
+  Sfx.init();
+  clearInterval(termTimer);
+  termTimer = setInterval(termStep, 16);
+}
+function termStep() {
+  if (termShown) return;
+  if (!termBuf.length && termQueue.length) termBuf = termQueue.shift() + '\n';
+  if (termBuf.length) {
+    const el = $('termwrap');
+    el.textContent += termBuf[0];
+    termBuf = termBuf.slice(1);
+    if (++termTick % 3 === 0) Sfx.tone('square', 1150 + Math.random() * 450, 900, 0.012, 0.045);
+  } else if (!termQueue.length) {
+    termShown = true;
+    clearInterval(termTimer);
+  }
+}
+function terminalTap() {
+  if (game.state !== 'terminal') return;
+  if (!termShown) { // toque durante el tipeo: volcar todo (nadie espera)
+    $('termwrap').textContent = termFull;
+    clearInterval(termTimer);
+    termShown = true;
+    return;
+  }
+  $('terminal').classList.add('hidden');
+  const cb = termCb; termCb = null;
+  if (cb) cb();
+  else lockAndPlay();
+}
+
+// arranque del sector n: mapaNUEVO (buildArena disposea el anterior), armas del guion,
+// checkpoint guardado y oleada 1. Se llama desde el callback del terminal (gesto vivo).
+function beginLevel(n) {
+  game.level = n;
+  buildArena(levelDef());
+  game.portalOpen = false; game.portalPending = false;
+  game.boss = false; game.bossPending = false; game.bossGuard = false;
+  game.midSpawned = false; game.bossDelay = 0;
+  portalCd = 0;
+  resetSOFT(false); // arena limpia, hp100/armor0, mags llenos, POOLS INTACTOS entre niveles
+  const d = levelDef();
+  if (d.weapons && d.weapons.early) spawnWeaponPickup(d.weapons.early, new THREE.Vector3(4.5, 0, 21));
+  $('sector').textContent = n;
+  saveCampaign(); // checkpoint: retry = este sector con estas armas
+  startLevelWave(1);
+  updateHud();
+}
+
+// entrada común (menú / retry / continuo): reset hard de recursos, opcional snapshot del
+// save encima, y terminal de bienvenida → beginLevel → play.
+function campaignStart(level, snap) {
+  Sfx.init();
+  resetGame(); // arsenal/recursos a cero (el retry re-encima lo del save)
+  if (snap) {
+    player.owned = new Set(snap.owned);
+    player.mags = {};
+    for (const id of snap.owned) if (WEAPONS[id].magSize > 0) player.mags[id] = WEAPONS[id].magSize;
+    for (const k in player.pools)
+      player.pools[k].n = Math.max(+snap.pools[k] || 0, k === 'balas' ? 60 : 0); // piso: la vecinal dispara siempre
+    player.weaponId = player.owned.has(player.weaponId) ? player.weaponId : 'rifle';
+    game.score = snap.score; game.kills = snap.kills;
+    lastOwnedN = -1;
+    applyViewModel(player.weaponId);
+    updateTouchSwap();
+    updateHud();
+  }
+  game.lives = LIVES_MAX;
+  const d = LEVELS[level - 1];
+  showTerminal([
+    `> MORIS-9 // SISTEMA CENTRAL DE ESTACIÓN CÓRDOBA-7`,
+    `> descongelación de emergencia... lista.`,
+    ``,
+    `SECTOR ${d.id}: ${d.name}`,
+    `"${d.subtitle}"`,
+    `...`,
+  ], () => { beginLevel(level); lockAndPlay(); });
+}
+function newCampaign() {
+  clearCampaign(); // INICIAR / NUEVA PARTIDA: el save anterior no vale nada
+  campaignStart(1, null);
+}
+function retryFromSave() {
+  const s = loadCampaign();
+  if (!s) { newCampaign(); return; }
+  campaignStart(s.level, s);
+}
+
+// MORIS-9 cayó y el portal del núcleo se pisó: campaña completa. El best score SOLO se
+// canta acá (spec E5) y el save se borra (no hay sector 6). Créditos pleno = E7.
+function campaignComplete() {
+  if (game.score > best) { best = game.score; localStorage.setItem('moris-shooter-best', best); }
+  clearCampaign();
+  game.state = 'dead';
+  document.exitPointerLock();
+  dispatchEvent(new CustomEvent('gamestate', { detail: game.state }));
+  $('deadtitle').textContent = 'MORIS-9 FUERA DE LÍNEA';
+  $('finalscore').textContent = game.score;
+  $('finalsector').textContent = '5 · NÚCLEO';
+  $('finalwave').textContent = 'campaña completa';
+  $('finalkills').textContent = game.kills;
+  $('bestdead').textContent = best; $('bestmenu').textContent = best;
+  $('retrycta').textContent = 'CLIC PARA VOLVER A JUGAR';
+  $('hud').classList.add('hidden');
+  $('touchhud').classList.add('hidden');
+  $('dead').classList.remove('hidden');
+  refreshContinueBtn();
 }
 
 /* ---- E4a: nombre del arma y "CALOR" (sobrecalentamiento): el DOM solo se toca cuando
@@ -1674,6 +2446,13 @@ function updateWname() {
   const el = $('wname');
   el.textContent = txt;
   el.classList.toggle('hot', player.cooling > 0);
+}
+
+// E5: vidas "SECTORES REINICIADOS" — corazones prendidos + los gastados tenues
+function updateLives() {
+  const on = '♥'.repeat(Math.max(0, Math.min(LIVES_MAX, game.lives)));
+  const off = game.lives < LIVES_MAX ? `<span class="off">${'♥'.repeat(LIVES_MAX - Math.max(0, game.lives))}</span>` : '';
+  $('lives').innerHTML = on + off;
 }
 
 function updateHud() {
@@ -1700,7 +2479,9 @@ function updateHud() {
   updateWname();
   updateSlotBar();
   $('score').textContent = game.score;
-  $('enemies').textContent = enemies.length + game.spawnQueue.length;
+  $('enemies').textContent = enemies.length + game.spawnQueue.length; // el boss es un Enemy más: ya cuenta
+  $('sector').textContent = game.level;
+  updateLives();
 }
 
 /* ============================================================ E4a — cambio de arma
@@ -1746,6 +2527,7 @@ function unlockWeapon(id, giveAmmo = 0) {
   updateTouchSwap();
   toast(`ARSENAL + ${W.name}`, 'ammo');
   feed(`ARSENAL: ${W.name}`);
+  saveCampaign(); // E5: el arma recién tomada entra al checkpoint (el retry no la pierde)
   updateHud();
   return true;
 }
@@ -1870,10 +2652,31 @@ function onTapStart(el, fn) {
     fn();
   });
 }
-const playFromMenu = () => { resetGame(); startWave(1); lockAndPlay(); };
-onTapStart($('menu'), playFromMenu);
+/* E5 — menú/muerte/terminal: el tap "libre" del overlay arranca campaña NUEVA (INICIAR);
+   CONTINUAR SECTOR N (si hay save) y NUEVA PARTIDA (en el game over) son botones con
+   stopPropagation + dedupe touch→click, como onTapStart, para que el overlay no duplique
+   ni sobreescriba la acción. El tap sobre el terminal avanza su texto (terminalTap). */
+function stopTap(el, fn) {
+  let lastTouch = -1e9;
+  el.addEventListener('touchstart', e => {
+    e.preventDefault(); e.stopPropagation();
+    lastTouch = performance.now();
+    fn();
+  }, { passive: false });
+  el.addEventListener('click', e => {
+    e.stopPropagation();
+    if (performance.now() - lastTouch < 500) return; // el click sintético del dedo ya contó
+    fn();
+  });
+}
+const playFromMenu = () => newCampaign(); // Start del mando en menú = campaña nueva
+onTapStart($('menu'), () => newCampaign());
+stopTap($('contbtn'), () => retryFromSave());
 onTapStart($('pause'), () => lockAndPlay());
-onTapStart($('dead'), playFromMenu);
+onTapStart($('dead'), () => retryFromSave()); // retry = checkpoint del save (oleada 1 del sector)
+stopTap($('newbtn'), () => newCampaign());    // borra el save y arranca por CRIOPODS
+onTapStart($('terminal'), () => terminalTap());
+refreshContinueBtn();
 
 /* scope de módulo (no dentro del if): update() lo lee siempre; en desktop queda todo en 0 */
 const touch = {
@@ -2151,14 +2954,20 @@ function pollGamepad(dt) {
 
   // Start (9): pausa con los dos caminos del flujo existente (pointer lock → el evento
   // pointerlockchange hace el resto; táctil o sin lock → enterPause directo).
+  // E5: en terminal, Start/A lo avanzan; en muerte, Start reintenta el sector (save) y
+  // B es NUEVA PARTIDA (el botón táctil equivalente borra el save).
   if (eStart) {
     if (game.state === 'play') {
       if (!TOUCH_MODE && document.pointerLockElement === renderer.domElement) document.exitPointerLock();
       else enterPause();
     } else if (game.state === 'pause') lockAndPlay();
-    else playFromMenu(); // menú arranca / muerte reintenta (Start único mando posible)
+    else if (game.state === 'terminal') terminalTap();
+    else if (game.state === 'dead') retryFromSave();
+    else playFromMenu(); // menú arranca campaña nueva (CONTINUAR queda para el tap en pantalla)
   }
   if (game.state === 'pause' && eB) lockAndPlay(); // B reanuda
+  if (game.state === 'terminal' && (eA || eB)) terminalTap(); // A avanza el terminal (spec E5)
+  if (game.state === 'dead' && eB) newCampaign(); // B = NUEVA PARTIDA con mando
 }
 
 /* ============================================================ E4a — shooting (fireWeapon)
@@ -2943,10 +3752,14 @@ function update(dt) {
          splice del actual nunca salta un vecino) */
   for (let i = enemies.length - 1; i >= 0; i--) enemies[i].update(dt, t);
 
-  /* --- spawn / oleadas */
+  // E5: la muerte con vidas se procesa ACÁ (die() difiere: su reset vaciaría `enemies`
+  // dentro del loop de arriba). El frame de la muerte no spawna oleada nueva: next frame.
+  if (game.respawnPending) { game.respawnPending = false; doRespawn(); }
+
+  /* --- spawn / oleadas (E5: por nivel → mini-jefe → portal) --- */
   if (game.intermission > 0) {
     game.intermission -= dt;
-    if (game.intermission <= 0) startWave(game.wave + 1);
+    if (game.intermission <= 0) startLevelWave(game.waveIn + 1);
   } else if (game.spawnQueue.length > 0) {
     game.spawnT -= dt;
     if (game.spawnT <= 0) {
@@ -2955,12 +3768,15 @@ function update(dt) {
       updateHud();
     }
   } else if (enemies.length === 0 && game.state === 'play') {
-    const bonus = 200 * game.wave;
-    game.score += bonus;
-    feed(`OLEADA COMPLETA +${bonus}`);
-    updateHud();
-    game.intermission = 3.2;
+    if (game.bossPending) { game.bossPending = false; spawnBoss(); }
+    else if (game.bossDelay > 0) { // respiro del "regalo de MORIS" (compilador N5)
+      game.bossDelay -= dt;
+      if (game.bossDelay <= 0) game.bossPending = true;
+    }
+    else if (!game.portalOpen) onWaveCleared(); // tras el boss ya no hay oleadas: solo portal
   }
+
+  portalTick(dt); // E5: pisar el portal del norte = sector siguiente (touch/mando incluidos)
 
   /* --- pickups (E3): giro lento + bob + idle 2 vistas; drop parpadea los últimos 5 s;
          auto-levante a <1.2 m horizontales del jugador (solo si aún sirve: un botiquín
@@ -3020,6 +3836,10 @@ function update(dt) {
 function updateWorldFx(dt, t) {
   // titilación global sutil de las estrellas (dos senos desfasados)
   starMat.opacity = 0.82 + Math.sin(t * 0.9) * 0.07 + Math.sin(t * 2.7 + 1.3) * 0.05;
+
+  // E5: los ambientales del nivel (lava UV-scroll, chispas, cubos que rotan, lámpara
+  // titilante, código del skydome, portal) — levelFx se resetea en cada buildArena.
+  for (const fn of levelFx) fn(dt, t);
 
   // decaimiento de los flashes de muerte (pool de luces)
   for (const f of fxFlashes) {
@@ -3097,7 +3917,14 @@ function loop() {
 }
 camera.position.copy(player.pos);
 camera.rotation.order = 'YXZ';
-window.__dbg = () => ({ state: game.state, wave: game.wave, en: enemies.length,
+/* E5 boot: el sector 1 ya montado detrás del menú (fondo vivo = mapa real). updateHud
+   pinta barras/slots/vidas antes del primer tap. */
+buildArena(levelDef());
+$('sector').textContent = game.level;
+updateHud();
+window.__dbg = () => ({ state: game.state, wave: game.wave, waveIn: game.waveIn, en: enemies.length,
+  level: game.level, lives: game.lives, boss: enemies.some(e => e.boss), // E5: campaña
+  portal: game.portalOpen ? 1 : 0,
   q: game.spawnQueue.length, hp: Math.round(player.hp), score: game.score,
   armor: Math.round(player.armor), // E3: recursos
   pools: Object.fromEntries(Object.entries(player.pools).map(([k, v]) => [k, v.n])),
@@ -3152,6 +3979,16 @@ if (new URLSearchParams(location.search).has('sprite') || localStorage.getItem('
     m.position.set((i - 1) * 2.6, player.pos.y + 0.15, -4.2);
     scene.add(m);
     return m;
+  });
+  // E5: los props billboard nuevos (enredadera / estatua) a tamaño real de juego
+  ['vine', 'statue'].forEach((kind, i) => {
+    const A = propSprite(kind);
+    const m = new THREE.Mesh(A.geo, new THREE.MeshBasicMaterial({
+      map: A.tex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
+    m.scale.setScalar(kind === 'vine' ? 1.3 : 2.2);
+    m.position.set(2.9 + i * 2, (kind === 'vine' ? 1.3 : 2.2) / 2 - 0.9, -4.0);
+    scene.add(m);
+    pre.push(m);
   });
   // pickups: grilla 6+5, vista 0 del atlas (idle sin girar) para leer el dibujo entero
   Object.keys(PICKUPS).forEach((kind, i) => {

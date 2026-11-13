@@ -104,6 +104,24 @@
   #dmg { position:fixed; inset:0; pointer-events:none; z-index:25; opacity:0;
     background:radial-gradient(ellipse at center, transparent 42%, rgba(255,20,40,.6) 100%); }
 
+  /* ---------- E5: overlay terminal MORIS-9 entre niveles (contenido pleno = E7).
+     Fondo negro, verde fósforo monospace, borde cian, cursor parpadeante. El advance
+     es click/tap (onTapStart) o A de mando — el overlay captura el puntero a propósito. ---------- */
+  #terminal { position:fixed; inset:0; z-index:32; display:flex; align-items:center;
+    justify-content:center; background:#020502; cursor:pointer; }
+  #terminal.hidden { display:none; }
+  #termwrap { width:min(680px,88vw); min-height:220px; text-align:left;
+    border:1px solid rgba(84,240,255,.4); background:rgba(3,10,6,.92);
+    box-shadow:0 0 40px rgba(84,240,255,.18), inset 0 0 60px rgba(0,0,0,.8);
+    padding:26px 30px; font-size:15px; line-height:1.75; letter-spacing:.06em;
+    color:#3ddc84; text-shadow:0 0 8px rgba(61,220,132,.5); white-space:pre-wrap;
+    overflow-wrap:break-word; }
+  #termwrap::after { content:'▌'; animation:blink 1s steps(1) infinite; color:#7dffb0; }
+  @keyframes blink { 50% { opacity:0; } }
+  #termhint { position:absolute; bottom:8%; left:0; right:0; text-align:center;
+    font-size:12px; letter-spacing:.28em; color:#2f9d63; animation:pulse 1.6s ease-in-out infinite; }
+  @media (max-height:520px) { #termwrap { font-size:12px; line-height:1.6; min-height:0; padding:14px 18px; } }
+
   /* ---------- barras de recurso (E3): VITALIDAD arriba, ARMADURA abajo ---------- */
   #hpwrap, #armwrap { position:absolute; left:28px; width:250px; }
   #hpwrap { bottom:64px; }
@@ -171,6 +189,11 @@
   #topbar { position:absolute; top:20px; left:50%; transform:translateX(-50%);
     display:flex; gap:34px; font-size:14px; letter-spacing:.18em; color:#9fc6e8; }
   #topbar b { color:#54f0ff; font-size:18px; }
+  /* E5: vidas = corazones chiquitos + etiqueta SECTORES REINICIADOS (spec DESIGN_ARSENAL) */
+  #lives { color:#ff4d5e; font-size:14px; letter-spacing:.12em; text-shadow:0 0 10px rgba(255,77,94,.5); }
+  #lives .off { opacity:.22; }
+  #topsec { text-align:left; }
+  #topsec .srlabel { display:block; font-size:9px; letter-spacing:.22em; color:#5b7d9c; }
 
   #wavemsg { position:absolute; left:50%; top:30%; transform:translateX(-50%);
     font-size:42px; letter-spacing:.3em; color:#ff4d5e; opacity:0; white-space:nowrap;
@@ -249,8 +272,9 @@
   /* Con FIRE abajo a la derecha el HUD se reubica: munición arriba a la derecha (el botón
      la taparía) por debajo de la topbar, y el killfeed desciende para no pisarla.
      La topbar se achica para que entre completa en un phone de 360 px de ancho. */
-  body.touch #topbar { gap:15px; font-size:12px; }
-  body.touch #topbar b { font-size:15px; }
+  body.touch #topbar { gap:15px; font-size:11px; }
+  body.touch #topbar b { font-size:14px; }
+  body.touch #lives { font-size:12px; }
   body.touch #ammowrap { top:50px; right:16px; bottom:auto; }
   body.touch #killfeed { top:126px; }
 
@@ -271,9 +295,11 @@
   <div id="crosshair"><span class="v"></span><span class="h"></span><span class="dot"></span><div id="railring"></div></div>
   <div id="hitmark"></div>
   <div id="topbar">
-    <span>OLEADA <b id="wave">1</b></span>
+    <span>SECTOR <b id="sector">1</b></span>
+    <span>OLEADA <b id="wave">1/3</b></span>
     <span>ENEMIGOS <b id="enemies">0</b></span>
     <span>SCORE <b id="score">0</b></span>
+    <span id="topsec"><span class="srlabel">SECTORES REINICIADOS</span><span id="lives">♥♥♥</span></span>
   </div>
   <div id="wavemsg"></div>
   <div id="killfeed"></div>
@@ -310,22 +336,23 @@
 
 <div id="menu" class="overlay">
   <div class="title">MORIS <span class="red">//</span> ARENA</div>
-  <div class="subtitle">WAVE SHOOTER — three.js — 100% local</div>
+  <div class="subtitle">CAMPAÑA "EL ÚLTIMO SECTOR" — 5 SECTORES — three.js — 100% local</div>
   <div class="controls" id="controlsDesktop">
     <b>WASD</b> moverse &nbsp;·&nbsp; <b>MOUSE</b> apuntar &nbsp;·&nbsp; <b>CLIC IZQ</b> disparar<br>
     <b>SHIFT</b> sprint · <b>L3 mando</b> sprint &nbsp;·&nbsp; <b>ESPACIO</b> saltar &nbsp;·&nbsp; <b>R</b> recargar &nbsp;·&nbsp; <b>B</b> bloom &nbsp;·&nbsp; <b>T</b> retro &nbsp;·&nbsp; <b>ESC</b> pausa<br>
     <b>1..0</b> / <b>RUEDA</b> / <b>LB·RB</b> cambiar arma (arsenal completo: puños, vecinal, MORIS-12, ametralladora, asador, Kira, Mate, Changó, Riel y Compilador)<br>
     El <b>RIEL</b> se carga <b>manteniendo el clic</b> (el anillo del centro se llena) y dispara al soltar<br>
-    Sobreviví a las oleadas. <b>La munición se acaba</b>: juntá cajas de vida, armadura y munición
-    en la arena — los enemigos sueltan drops. Sin balas, los <b>puños</b> siempre responden.<br>
+    5 sectores con oleadas propias: matá al <b>mini-jefe</b> de cada uno, agarrá el <b>arma de la antesala</b>
+    y pisá el <b>PORTAL</b> para descender. Tenés <b>3 sectores</b> (vidas): se juegan de a una por nivel.<br>
   </div>
   <div class="controls" id="controlsTouch" style="display:none">
     <b>JOYSTICK</b> (tercio izquierdo) moverse · fondo = <b>SPRINT</b><br>
     <b>ARRASTRÁ</b> en el resto de la pantalla para apuntar<br>
-    <b>FIRE</b> disparar (mantené) · <b>◀ ▶</b> cambiar arma · <b>RECARGAR</b> · <b>SALTAR</b> · sobreviví y juntá cajas<br>
-    <b>MANTENÉ FIRE</b> con el RIEL cargando: dispara al soltar (y el COMPILADOR gasta 10 argents por orbe)
+    <b>FIRE</b> disparar (mantené) · <b>◀ ▶</b> cambiar arma · <b>RECARGAR</b> · <b>SALTAR</b> · juntá cajas<br>
+    <b>MANTENÉ FIRE</b> con el RIEL cargando: dispara al soltar · matá al mini-jefe y <b>pisá el PORTAL</b>
   </div>
-  <div class="cta" id="startbtn">CLIC PARA JUGAR</div>
+  <div class="cta">CLIC PARA JUGAR</div>
+  <div class="cta" id="contbtn" style="display:none; border-color:rgba(61,220,132,.6); background:rgba(61,220,132,.08)">CONTINUAR SECTOR 1</div>
   <div class="stat-line"><span id="rec">Recomendado: PC con mouse.</span> Mejor score: <span class="best" id="bestmenu">0</span></div>
 </div>
 
@@ -335,11 +362,18 @@
 </div>
 
 <div id="dead" class="overlay hidden">
-  <div class="title red" style="font-size:52px">ELIMINADO</div>
+  <div class="title red" id="deadtitle" style="font-size:52px">ELIMINADO</div>
   <div class="stat-big">SCORE <span id="finalscore">0</span></div>
-  <div class="stat-line">Oleada alcanzada: <span id="finalwave">1</span> · Kills: <span id="finalkills">0</span></div>
+  <div class="stat-line">Sector: <span id="finalsector">1</span> · Oleada: <span id="finalwave">1</span> · Kills: <span id="finalkills">0</span></div>
   <div class="stat-line best">Mejor score: <span id="bestdead">0</span></div>
-  <div class="cta">CLIC PARA REINTENTAR</div>
+  <div class="cta" id="retrycta">CLIC PARA REINTENTAR SECTOR</div>
+  <div class="cta" id="newbtn" style="border-color:rgba(255,77,94,.6); background:rgba(255,77,94,.08); animation:none; font-size:13px; padding:10px 22px">NUEVA PARTIDA (borra el progreso)</div>
+</div>
+
+<!-- E5: terminal MORIS-9 entre niveles. game.js tipea el guion (showTerminal) y el tap/A avanza. -->
+<div id="terminal" class="hidden">
+  <div id="termwrap"></div>
+  <div id="termhint">TOCA / CLIC / A PARA CONTINUAR</div>
 </div>
 
 <script type="importmap">
