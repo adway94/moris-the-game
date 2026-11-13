@@ -185,17 +185,37 @@ const rtMain = new THREE.WebGLRenderTarget(
   { type: THREE.HalfFloatType, samples: 4 });
 const composer = new EffectComposer(renderer, rtMain);
 composer.addPass(new RenderPass(scene, camera));
-const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.6, 0.75);
+// bloom a MEDIA resolución: la pirámide de mip de UnrealBloomPass arranca en 1/2 del
+// buffer efectivo -> cada uno de sus ~11 fullscreen passes cuesta 1/4. Clave para PCs
+// flojos / SwiftShader, donde el composer a resolución completa hundía el FPS.
+const BLOOM_SCALE = 0.5;
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(innerWidth * BLOOM_SCALE, innerHeight * BLOOM_SCALE), 0.55, 0.6, 0.75);
+// addPass y composer.setSize siempre llaman pass.setSize(effectiveW, effectiveH) a
+// tamaño completo; se intercepta para que la pirámide quede siempre a media resolución.
+const bloomSetSizeFull = bloomPass.setSize.bind(bloomPass);
+bloomPass.setSize = (w, h) =>
+  bloomSetSizeFull(Math.max(1, Math.round(w * BLOOM_SCALE)), Math.max(1, Math.round(h * BLOOM_SCALE)));
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 // normaliza tamaños: con RT custom el composer inicializa _width al tamaño efectivo
 // (ya multiplicada por pixelRatio) y addPass volvería a escalarla en pantallas HiDPI.
+// pixelRatio idéntico al del renderer (dpr cap 2) para que los buffers coincidan.
+composer.setPixelRatio(Math.min(devicePixelRatio, 2));
 composer.setSize(innerWidth, innerHeight);
+
+/* bloom on/off: off saltea el composer y va directo por renderer.render (en screen el
+   renderer aplica ACES + sRGB, misma terminación que OutputPass). */
+let bloomOn = true;
+function setBloom(on) { bloomOn = on; }
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  const pr = Math.min(devicePixelRatio, 2); // mismo cap de dpr para renderer y composer
+  renderer.setPixelRatio(pr);
   renderer.setSize(innerWidth, innerHeight);
+  composer.setPixelRatio(pr); // re-escala con _width/_height actuales (CSS px)
   composer.setSize(innerWidth, innerHeight);
 });
 
@@ -907,6 +927,7 @@ let firing = false;
 addEventListener('keydown', e => {
   keys[e.code] = true;
   if (e.code === 'KeyR') tryReload();
+  if (e.code === 'KeyB') setBloom(!bloomOn); // toggle manual de bloom (anula/rehace el auto-off)
   if (e.code === 'Space') e.preventDefault();
 });
 addEventListener('keyup', e => keys[e.code] = false);
@@ -1181,16 +1202,36 @@ function updateWorldFx(dt, t) {
 const fpsEl = $('fps');
 let fpsN = 0, fpsLast = performance.now();
 
+/* auto-degrade (PCs flojos / phones / SwiftShader): fps promediado en ventanas de 2 s
+   solo en modo play; dos ventanas seguidas por debajo de 28 apagan el bloom UNA vez.
+   Nunca se re-enciende solo; B lo puede reactivar manualmente. */
+const FPS_WINDOW_MS = 2000, FPS_FLOOR = 28;
+let winFrames = 0, winT0 = performance.now(), lowWindows = 0;
+function autoDegrade(now) {
+  if (game.state !== 'play') { winFrames = 0; winT0 = now; return; } // no degradar en menú/pausa
+  winFrames++;
+  const el = now - winT0;
+  if (el < FPS_WINDOW_MS) return;
+  const avg = winFrames * 1000 / el;
+  winFrames = 0; winT0 = now;
+  lowWindows = avg < FPS_FLOOR ? lowWindows + 1 : 0;
+  if (lowWindows < 2) return;
+  lowWindows = 0;
+  if (bloomOn) { setBloom(false); feed('bloom auto-off (rendimiento)'); }
+}
+
 function loop() {
   requestAnimationFrame(loop);
   const dt = Math.min(clock.getDelta(), 0.05);
   if (game.state === 'play') update(dt);
   updateWorldFx(dt, clock.elapsedTime);
-  composer.render();
+  if (bloomOn) composer.render();
+  else renderer.render(scene, camera); // path directo: cero costo de composer
   fpsN++;
   const now = performance.now();
+  autoDegrade(now);
   if (now - fpsLast >= 1000) { // FPS discreto, 1 actualización por segundo
-    fpsEl.textContent = `${Math.round(fpsN * 1000 / (now - fpsLast))} FPS`;
+    fpsEl.textContent = `${Math.round(fpsN * 1000 / (now - fpsLast))} FPS · bloom ${bloomOn ? 'on' : 'off'}`;
     fpsN = 0; fpsLast = now;
   }
 }
@@ -1198,7 +1239,7 @@ camera.position.copy(player.pos);
 camera.rotation.order = 'YXZ';
 window.__dbg = () => ({ state: game.state, wave: game.wave, en: enemies.length,
   q: game.spawnQueue.length, hp: Math.round(player.hp), score: game.score,
-  inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1) });
+  inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn });
 window.__probe = () => {
   if (!enemies.length) return 'no enemies';
   const o = camera.getWorldPosition(new THREE.Vector3());
