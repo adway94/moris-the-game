@@ -122,10 +122,38 @@ const Sfx = {
   dry()         { this.noise(0.02, 0.14, 2800, 3); this.tone('square', 150, 70, 0.03, 0.1); }, // aguja percutida: pool vacío
   wave()   { [440, 554, 659, 880].forEach((f, i) => setTimeout(() => this.tone('triangle', f, f, 0.16, 0.18), i * 110)); },
   death()  { this.tone('sawtooth', 300, 30, 1.1, 0.3); this.noise(0.8, 0.25, 220, 0.5); },
-  // E5 — campaña: el lamento grave del mini-jefe y la apertura del portal (barrido
-  // ascendente + soplo, se distingue del pickup de arma).
-  bossSpawn(){ this.tone('sawtooth', 70, 46, 1.2, 0.4); this.noise(1.0, 0.2, 160, 0.5);
-               setTimeout(() => this.tone('sawtooth', 58, 40, 1.0, 0.32), 240); },
+  // E5 — campaña: el lamento grave del mini-jefe. E6 lo volvió UNO PROPIO POR JEFE
+  // (todos graves y distintos entre sí: rotor / groaning / fragua / réquiem / digital).
+  bossSpawn(id = 'elite') {
+    if (id === 'criopylot') { // rotor criogénico que se acerca + silbido de presión
+      this.tone('sawtooth', 64, 40, 1.4, 0.42); this.noise(1.2, 0.18, 210, 0.6);
+      setTimeout(() => this.tone('triangle', 92, 58, 0.9, 0.22), 300);
+    } else if (id === 'huerta') { // groan de tallo gigante + burbujas de savia
+      this.tone('sine', 52, 33, 1.7, 0.5); this.noise(1.3, 0.22, 120, 0.4);
+      setTimeout(() => this.noise(0.25, 0.2, 420, 3), 700);
+      setTimeout(() => this.noise(0.2, 0.16, 300, 3), 1050);
+    } else if (id === 'fundidor') { // fragua: golpe grave + siseo de colada + yunque
+      this.tone('sawtooth', 86, 30, 1.3, 0.45); this.noise(1.1, 0.25, 180, 0.5);
+      setTimeout(() => this.noise(0.6, 0.2, 2400, 0.8), 420);
+      setTimeout(() => this.tone('square', 170, 60, 0.16, 0.3), 900);
+    } else if (id === 'confesor') { // réquiem desafinado: dos senos graves batiendo lento
+      this.tone('sine', 98, 92, 1.8, 0.32); this.tone('sine', 104, 96, 1.8, 0.26);
+      setTimeout(() => this.tone('sine', 62, 58, 1.2, 0.3), 500);
+    } else if (id === 'moris9') { // barrido digital 520→52 + sub-grave + chispa de datos
+      this.tone('square', 520, 52, 1.5, 0.34); this.tone('sine', 42, 34, 1.7, 0.5);
+      setTimeout(() => this.noise(0.25, 0.15, 3200, 2), 800);
+    } else { // elite genérico heredado de E5 (fallback)
+      this.tone('sawtooth', 70, 46, 1.2, 0.4); this.noise(1.0, 0.2, 160, 0.5);
+      setTimeout(() => this.tone('sawtooth', 58, 40, 1.0, 0.32), 240);
+    }
+  },
+  // E6 — bestiario: sonidos cortos por conducta nueva (todos distinguibles del arsenal).
+  boltFire()  { this.tone('triangle', 340, 120, 0.09, 0.16); this.noise(0.05, 0.1, 1200, 1.5); },   // bolt enemigo (lancellas/espectro/jefes)
+  sporePop()  { this.noise(0.16, 0.2, 520, 0.7); this.tone('sine', 130, 55, 0.14, 0.14); },          // nube de esporas que estalla
+  hazardTick(){ this.noise(0.12, 0.1, 700, 0.8); },                                                   // pisar veneno/lava (el hurt() pone el dolor)
+  blink()     { this.tone('sine', 900, 180, 0.12, 0.16); this.noise(0.06, 0.14, 2600, 2.5); },        // teletransporte (posesivo/confesor)
+  glitchZip() { this.noise(0.05, 0.16, 1700 + Math.random() * 1600, 3); },                            // saltito discreto del glitch
+  phaseUp()   { this.tone('sawtooth', 220, 733, 0.35, 0.28); this.noise(0.25, 0.15, 1400, 1); },      // el jefe entra en fase
   portal() { this.tone('triangle', 90, 460, 0.55, 0.3); this.noise(0.5, 0.22, 900, 1.2); },
   // E5 — respawn por vidas: "reinicio sectorial" (barrido corto de subida + clac).
   respawn() { this.tone('square', 140, 620, 0.22, 0.2); this.noise(0.18, 0.2, 1400, 1.5); },
@@ -453,10 +481,14 @@ const PALETTES = {
      lo podés perder · mid: tras completar las waves, "te lo da MORIS").
    · sky {kind:'stars'|'dome'|'void', stops, stars, code} · fog {color, density}
    · light: [hemi sky, ground, int] [sun col, int] [rim cian, rim magenta, int, int]
-   · set: constructor de geometría propia + props (≤40) — ver funciones setXxx abajo. */
+   · set: constructor de geometría propia + props (≤40) — ver funciones setXxx abajo.
+   · E6 spawnWeights: bestiario PROPIO por sector — peso relativo por tipo en cada
+     oleada (buildWave reparte el total de la fórmula E5 según estos pesos; la
+     cantidad por nivel se mantiene intacta). N1 = la mezcla histórica de E5. */
 const LEVELS = [
   { id: 1, name: 'CRIOPODS', subtitle: 'el frío despierta a todo, incluso a lo que no debería',
     waves: 3, seed: 1337, pal: PALETTES.criopods,
+    spawnWeights: { droner: 2, sprinter: 1 },                     // como hoy: droners + rastreadores
     weapons: { exit: 'moris12' },                              // "escopeta al final N1": antesala del portal
     sky: { kind: 'stars', stops: [[0, '#000104'], [0.34, '#020715'], [0.62, '#082142'], [0.86, '#114374'], [0.955, '#1d5d94'], [1, '#0a1a30']], stars: true },
     bg: 0x05070d, fog: { color: 0x081327, density: 0.021 },        // niebla azul densa
@@ -466,6 +498,7 @@ const LEVELS = [
     waves: 4, seed: 552, pal: PALETTES.invernadero,
     weapons: { early: 'ametralladora', exit: 'asador' },       // N2 early / N2 final (guion DESIGN_ARSENAL)
     sky: { kind: 'dome', stops: [[0, '#02150c'], [0.3, '#06351d'], [0.6, '#0d5a2c'], [0.85, '#1d8a45'], [0.95, '#2fb35c'], [1, '#0a2f1a']], stars: false },
+    spawnWeights: { esporeador: 4, droner: 3, sprinter: 3 },      // E6: el jardín camina
     bg: 0x04120a, fog: { color: 0x0d3a1e, density: 0.023 },        // niebla verde
     light: [[0x4ac07a, 0x0a1c10, 1.8], [0xaaffc4, 2.2], [0x3ddc84, 0xff3bd8, 90, 70]],
     set: setInvernadero },
@@ -473,6 +506,7 @@ const LEVELS = [
     waves: 4, seed: 9081, pal: PALETTES.reactor,
     weapons: { early: 'kira', exit: 'mate' },
     sky: { kind: 'dome', stops: [[0, '#0a0503'], [0.45, '#1e0b04'], [0.72, '#59210a'], [0.9, '#9c4413'], [1, '#2a0f06']], stars: false },
+    spawnWeights: { lancellas: 4, esporeador: 3, brute: 3 },      // E6: fundición con lanzas
     bg: 0x120803, fog: { color: 0x3a1608, density: 0.02 },         // fog naranja
     light: [[0x9a5a2a, 0x1c0c04, 1.6], [0xffc890, 2.0], [0xff7a2a, 0xffd166, 110, 60]],
     set: setReactor },
@@ -480,11 +514,14 @@ const LEVELS = [
     waves: 5, seed: 4242, pal: PALETTES.cripta, trimK: 2.4, // filo de muros más HDR (ambiental casi muerta)
     weapons: { early: 'chango', exit: 'riel' },
     sky: { kind: 'void', stops: [[0, '#020107'], [0.55, '#0a0618'], [0.85, '#160c2e'], [1, '#070410']], stars: false },
+    spawnWeights: { posesivo: 4, espectro: 4, sprinter: 2 },     // E6: la cripta está poseída
     bg: 0x060309, fog: { color: 0x160c2e, density: 0.028 },        // casi a ciegas
     light: [[0x3a2c58, 0x070410, 0.55], [0x9a7ad0, 0.5], [0xaa5cff, 0x5450ff, 130, 90]], // ambient al piso: los emisivos cargan la escena
     set: setCripta },
   { id: 5, name: 'NÚCLEO: MORIS-9', subtitle: 'todo ascensor termina donde empezó todo',
     waves: 1, seed: 777, pal: PALETTES.nucleo, seamK: 2.2, // grilla cian tipo Tron (junta del piso al doble)
+    // E6: la arena glitch mezcla TODO el bestiario + glitch (el núcleo clona lo que vio)
+    spawnWeights: { glitch: 4, droner: 2, sprinter: 2, lancellas: 2, espectro: 2, brute: 1, esporeador: 1, posesivo: 1 },
     weapons: { mid: 'compilador' },                           // "N5 medio: tras las oleadas, te lo da MORIS"
     sky: { kind: 'void', code: true },                             // vacío negro con código cian
     bg: 0x000205, fog: { color: 0x03141f, density: 0.013 },        // niebla cian fina
@@ -1446,10 +1483,29 @@ function popFxLight(pos, color, peak = 150, dur = 0.38) {
 /* ============================================================ enemies */
 // drop: E3 — los drops ya no son una chance por tipo (el viejo campo `drop` salió):
 // rollKillDrop() centraliza las chances (35/40/15/10) + guarantee de BRUTE.
+/* E6 — bestiario por nivel + mini-jefes. Cada tipo nuevo entra a la factory (clase
+   Enemy) por su fila: beh = conducta dentro de update(); alpha = material translúcido
+   (fantasmas); bossType + name = mini-jefe con barra en el HUD y score de la spec
+   (400/600/800/1000/2000). El hp de los jefes es FIJO (no pasa por la fórmula de
+   oleada): está balanceado para 25-60 s de pelea con el arma esperada del sector
+   (vecinal→N1 ~1700, MORIS-12→N2 ~2100, Kira→N3 ~2700, changó/riel→N4 ~2700,
+   arsenal completo→N5 ~4200). */
 const ENEMY_TYPES = {
-  droner:  { hp: 40,  speed: 3.4, scale: 1.0,  dmg: 12, score: 100, color: 0xff4d5e },
-  sprinter:{ hp: 24,  speed: 6.6, scale: 0.72, dmg: 8,  score: 150, color: 0xb465ff },
-  brute:   { hp: 170, speed: 2.3, scale: 1.75, dmg: 26, score: 400, color: 0xff9a3d },
+  droner:  { hp: 40,  speed: 3.4, scale: 1.0,  dmg: 12, score: 100,  color: 0xff4d5e },
+  sprinter:{ hp: 24,  speed: 6.6, scale: 0.72, dmg: 8,  score: 150,  color: 0xb465ff },
+  brute:   { hp: 170, speed: 2.3, scale: 1.75, dmg: 26, score: 400,  color: 0xff9a3d },
+  // E6 mobs — cada sector juega con su bestiario (pesos en LEVELS[].spawnWeights):
+  esporeador:{ hp: 62,  speed: 1.7, scale: 1.25, dmg: 10, score: 120, color: 0x5eff8a, beh: 'spore' },
+  lancellas: { hp: 58,  speed: 2.8, scale: 1.1,  dmg: 10, score: 160, color: 0xff9a3d, beh: 'lance' },
+  posesivo:  { hp: 22,  speed: 5.6, scale: 0.78, dmg: 20, score: 200, color: 0xc3b1ee, beh: 'blink' },
+  espectro:  { hp: 28,  speed: 3.6, scale: 1.1,  dmg: 9,  score: 180, color: 0xaa5cff, alpha: 0.68, beh: 'kite' },
+  glitch:    { hp: 50,  speed: 3.2, scale: 1.0,  dmg: 12, score: 220, color: 0x54f0ff, beh: 'step' },
+  // E6 mini-jefes — sprite propio grande en sprites.js, hitbox = escala del grupo.
+  criopylot: { hp: 1700, speed: 2.1, scale: 2.6, dmg: 16, score: 400,  color: 0x54f0ff,  bossType: true, name: 'CRIOPYLOT',    beh: 'bcrio' },
+  huerta:    { hp: 2100, speed: 0.0, scale: 2.6, dmg: 14, score: 600,  color: 0xff5ee0,  bossType: true, name: 'PADRE HUERTA', beh: 'static' },
+  fundidor:  { hp: 2700, speed: 2.4, scale: 2.5, dmg: 26, score: 800,  color: 0xff6a2a,  bossType: true, name: 'FUNDIDOR',     beh: 'bfundi' },
+  confesor:  { hp: 2700, speed: 2.8, scale: 2.4, dmg: 16, score: 1000, color: 0xaa5cff,  bossType: true, name: 'EL CONFESOR',  beh: 'bconf', alpha: 0.85 },
+  moris9:    { hp: 4200, speed: 3.0, scale: 2.8, dmg: 20, score: 2000, color: 0x54f0ff,  bossType: true, name: 'MORIS-9',      beh: 'bmoris' },
 };
 const enemies = [];
 const enemyHitboxes = []; // mallas invisibles para raycast
@@ -1468,6 +1524,11 @@ const TINT_SCORCH = new THREE.Color(0.40, 0.36, 0.42); // E4b "scorched" (compil
 // E5: el mini-jefe NUNCA vuelve a 1.0 — su "normal" es un HDR suave (1.45) que el bloom
 // lee como glow permanente; el anillo del piso completa el aura.
 const TINT_BOSS   = new THREE.Color(1.45, 1.45, 1.45);
+// E6 glitch: el droner "roto" tiene un NORMAL que parpadea entre cyan y magenta HDR
+// (stepped, no lerp: la alternancia ES la animación). El lerp único de update() sigue
+// siendo el único escritor del color — este tint solo cambia el TARGET del decay.
+const TINT_HEX_A  = new THREE.Color(0.45, 2.1, 2.4);
+const TINT_HEX_B  = new THREE.Color(2.4, 0.45, 1.9);
 // oscuro SUB-1 — el sprite se apaga y el bloom lo suelta. A diferencia del quemado no
 // hace DoT y el fuego manda: update() elige el tinte por prioridad burn > scorch > normal.
 
@@ -1500,37 +1561,62 @@ function enemySprite(type) {
 }
 
 class Enemy {
-  // E5 — boss=true: MINI-JEFE elite sobre un tipo existente (scale ×2.2, hp ×6, aura
-  // emisiva anillo en el piso que late, sprite levemente HDR). score ×12. E6 va a
-  // reemplazar los tipos por jefes con conducta propia: la firma (type,pos,boss) queda.
+  // E6 — la factory: TODO entra por la fila de ENEMY_TYPES. bossType:true = mini-jefe
+  // (stats fijos, aura, nombre en HUD); beh = conducta dentro de update() (default: el
+  // steering de E2 intacto). Firma (type,pos) igual que E5 — spawn no se toca.
   constructor(type, pos, boss = false) {
-    this.boss = boss;
-    let T = ENEMY_TYPES[type];
-    if (boss) T = Object.assign({}, T, { hp: T.hp * 6, scale: T.scale * 2.2, speed: T.speed * 0.85, score: T.score * 12, dmg: Math.round(T.dmg * 1.35) });
-    this.type = type; this.T = T;
+    const T = ENEMY_TYPES[type];
+    this.T = T; this.type = type;
+    this.boss = boss || !!T.bossType;
     const mult = diffMult(); // 1 + 0.25·(nivel-1): todo el mapa sube de dificultad por sector
-    this.hp = T.hp * (1 + 0.14 * (game.wave - 1)) * mult;
-    this.speed = T.speed * (1 + 0.03 * (game.wave - 1)) * (1 + 0.08 * (game.level - 1)) * rand(0.9, 1.1);
+    if (this.boss) {
+      this.hp = T.hp;        // los jefes NO escalan por oleada: 25-60 s con el arma esperada
+      this.speed = T.speed;
+    } else {
+      this.hp = T.hp * (1 + 0.14 * (game.wave - 1)) * mult;
+      this.speed = T.speed * (1 + 0.03 * (game.wave - 1)) * (1 + 0.08 * (game.level - 1)) * rand(0.9, 1.1);
+    }
     this.hitCd = 0; this.phase = rand(0, 6.28); this.spawnT = 0;
     this.lastScr = null; // E8-polish(a): última posición en pantalla con el enemigo visible
     this.burnT = 0;      // E4a: segundos de estado QUEMADO (asador); DoT fraccional
     this.burnDps = 0;    // 2.25 lo fija la fila WEAPONS.asador en burn() (única fuente)
     this.scorchT = 0;    // E4b: segundos de tinte oscuro por detonación del compilador
+    // ---- E6: estado de conducta (barato: un puñado de números por enemigo) ----
+    this.atkT = rand(1.2, 2.8);  // reloj de disparo/emit (beh lance/kite/spore y jefes)
+    this.tell = 0;               // telegrafía activa (flash + shake 0.3 s antes de atacar)
+    this.tellQ = null;           // acción diferida: se corre cuando tell llega a 0
+    this.tpT = -1;               // posesivo/jefes: cuenta del salto (blink si <0.5)
+    this.dashT = 0; this.dashOn = false; // embestida (Criopylot/Fundidor fase 2)
+    this.dashHit = false;
+    this.stepT = rand(0, 0.3);   // glitch: reloj del saltito discreto
+    this.hex = 0;                // glitch: 0 cyan / 1 magenta (material.color alterna)
+    this.sporeT = rand(2, 4);    // esporeador: primera nube a los 2-4 s
+    this.owner = null;           // summon: el jefe que lo parió (se muestra en el feed)
+    this.pets = this.boss ? [] : null;   // jefes: registro de invocados (cap por jefe)
+    this.pT = this.boss ? 4 : 0; // reloj de invocación (los jefes arrancan a los 4 s:
+                                 // el jefe se presenta primero, su séquito después)
+    this.phaseN = 1;             // MORIS-9: fase por hp (100/66/33)
+    this.orbA = rand(0, 6.28);   // MORIS-9: ángulo de órbita
 
     const A = enemySprite(type);
     this.tex = A.tex.clone();
     this.tex.repeat.set(0.5, 1); // hoja horizontal de 2 frames
-    this.spr = new THREE.Mesh(A.geo, new THREE.MeshBasicMaterial({
+    const mat = new THREE.MeshBasicMaterial({
       map: this.tex, transparent: true, alphaTest: 0.5, depthWrite: true,
       side: THREE.DoubleSide,
-    }));
-    if (boss) this.spr.material.color.setScalar(1.45); // aura ALSO tiñe el sprite (HDR suave: glow por bloom)
+    });
+    if (T.alpha) { // E6 fantasmas (espectro/confesor): alpha material bajo, sin depthWrite
+      mat.alphaTest = 0.04; mat.opacity = T.alpha; mat.depthWrite = false;
+    }
+    this.baseOpacity = T.alpha || 1;
+    this.spr = new THREE.Mesh(A.geo, mat);
+    if (this.boss) this.spr.material.color.setScalar(1.45); // aura ALSO tiñe el sprite (HDR suave: glow por bloom)
     this.spr.position.y = 0.1; // el plano cubre local -1.05..1.25 ⊃ hitbox (-0.75..1.15)
     this.g = new THREE.Group();
     this.g.scale.setScalar(0.01);
     this.baseY = (0.95 + T.scale * 0.25) * T.scale;
     this.g.add(this.spr);
-    if (boss) { // anillo base: la firma visual del elite (late en update)
+    if (this.boss) { // anillo base: la firma visual del elite (late en update)
       this.aura = new THREE.Mesh(
         new THREE.RingGeometry(0.85, 1.15, 24).rotateX(-Math.PI / 2),
         new THREE.MeshBasicMaterial({ color: neon(T.color, 2.4), transparent: true,
@@ -1548,7 +1634,8 @@ class Enemy {
     scene.add(this.g);
     enemies.push(this);
     enemyHitboxes.push(this.hitbox);
-    burst(pos, T.color, 14, 5, 0.8);
+    burst(pos, T.color, this.boss ? 26 : 14, this.boss ? 8 : 5, this.boss ? 1.4 : 0.8);
+    if (this.boss) popFxLight(this.g.position, T.color, 260, 0.6); // entrada con luz: se presenta
   }
   // flash de daño: tinte blanco SUPERRADIANTE (Basic multiplica el map con color >1 →
   // sprite blanco HDR); en update() decae HACIA el tinte del estado (blanco / quemado /
@@ -1567,6 +1654,12 @@ class Enemy {
     this.hp -= d;
     this.flash();
     burst(point, this.T.color, 4, 4, 0.6, 1.6);
+    // E6 Confesor: CADA golpe conectado agenda un salto (telegrafía 0.2 s). El debounce
+    // 0.25 s evita que los 14 pellets del changó agenden 14 teleports en el mismo frame.
+    if (this.hp > 0 && this.T.beh === 'bconf') {
+      if (game.time - (this.lastHurtT || -9) > 0.25) { this.tpT = Math.max(this.tpT, 0.2); Sfx.blink(); }
+      this.lastHurtT = game.time;
+    }
     if (this.hp <= 0) this.die();
   }
   // E4a — empujón (puños): desplazamiento inmediato lejos del jugador, con los mismos
@@ -1583,18 +1676,23 @@ class Enemy {
   }
   die() {
     Sfx.kill();
-    if (this.boss) Sfx.explosion(); // el elite se apaga con boom, no con el blip normal
+    if (this.boss) Sfx.explosion(); // el jefe se apaga con boom, no con el blip normal
     game.score += this.T.score; game.kills++;
+    if (this.boss) feed(`BOSS: ${this.T.name} +${this.T.score}`); // E6: score alto al killfeed
     // E8-polish(a): el "+100 DRONER" ya NO sube al killfeed arriba a la derecha — es un
     // popup anclado a la proyección en pantalla del pecho del enemigo (o a su última
     // posición visible si murió de espaldas). El killfeed queda para oleadas/avisos.
-    killPopup(`+${this.T.score} ${this.type.toUpperCase()}`,
-      this.chest(_popV), this.lastScr, this.T.color);
+    // E6 glitch: el popup sale en el color del último tinte (números: killPopup hace
+    // toCss(hex) — strings tipo '#54f0ff' le producirían un '##54f0ff' inválido).
+    killPopup(`+${this.T.score} ${(this.T.name || this.type).toUpperCase()}`,
+      this.chest(_popV), this.lastScr, this.T.beh === 'step' ? (this.hex ? 0xff3bd8 : 0x54f0ff) : this.T.color);
     rollKillDrop(this.g.position, this.type, this.boss); // E3: drops (el boss garantiza casco)
+    // E6 esporeador: muere ESCUPIDO — la nube de esporas sigue ardiendo 3 s sobre su cuerpo
+    if (this.T.beh === 'spore') spawnZone('poison', this.g.position.x, this.g.position.z, 2.0, 3, 3);
     burst(this.g.position, this.T.color, this.boss ? 44 : 22, this.boss ? 12 : 9, this.boss ? 2 : 1.2, 1.7);
     popFxLight(this.g.position, this.T.color, this.boss ? 320 : 150, 0.38); // flash momentáneo desde el pool
     this.remove();
-    if (this.boss) onBossKilled(this); // E5: abre el portal (guardado por game.portalOpen)
+    if (this.boss) onBossKilled(this); // E5: abre el portal (E6: MORIS-9 cierra la campaña)
   }
   // punto "pecho" para el popup de score (centro alto del billboard)
   chest(out) { return out.set(this.g.position.x, this.g.position.y + 0.8, this.g.position.z); }
@@ -1627,18 +1725,46 @@ class Enemy {
     // (E4b: prioridad burn > scorch > normal — un quemado-scorcheado sale naranja mientras
     // hierve y queda oscuro al apagarse el fuego). Sin burn ni scorch esto es idéntico al
     // "decay to 1" del E2: el único escritor del color sigue siendo este lerp.
+    // E6: el "normal" puede ser propio del tipo (glitch: cyan/magenta a saltos).
+    const baseTint = this.boss ? TINT_BOSS
+      : T.beh === 'step' ? (this.hex ? TINT_HEX_B : TINT_HEX_A) : TINT_NORMAL;
     this.spr.material.color.lerp(
-      this.burnT > 0 ? TINT_BURN : this.scorchT > 0 ? TINT_SCORCH : (this.boss ? TINT_BOSS : TINT_NORMAL),
+      this.burnT > 0 ? TINT_BURN : this.scorchT > 0 ? TINT_SCORCH : baseTint,
       Math.min(1, dt * 5));
     if (this.aura) this.aura.scale.setScalar(1 + Math.sin(t * 4 + this.phase) * 0.12); // E5: aura latiendo
+
+    // E6 telegrafía: 0.3 s de flash + shake de sprite antes de cada ataque (spec 4);
+    // al vencer corre la acción agendada por el comportamiento.
+    if (this.tell > 0) {
+      this.tell -= dt;
+      this.spr.position.x = rand(-0.06, 0.06);
+      if (this.tell <= 0) {
+        this.spr.position.x = 0;
+        const f = this.tellQ; this.tellQ = null;
+        if (f) f();
+      }
+    }
+    // E6 blink de posesivo/confesor (parpadeo 0.5 s ANTES de saltar): opacidad a saltos
+    if (this.tpT > 0 && this.tpT < 0.5)
+      this.spr.material.opacity = (t * 24 % 1 < 0.5 ? 0.3 : 1) * this.baseOpacity;
+    else if (this.spr.material.opacity !== this.baseOpacity)
+      this.spr.material.opacity = this.baseOpacity;
+
+    // E6: los summoned que quedan huérfanos (su jefe murió) siguen sueltos, pero se
+    // quitan del registro del padre para no contar basura.
+    if (this.owner && !enemies.includes(this.owner)) this.owner = null;
 
     const p = this.g.position;
     _eDir.set(player.pos.x - p.x, 0, player.pos.z - p.z);
     const dist = _eDir.length();
     if (dist > 0.001) _eDir.normalize();
 
-    // separación entre enemigos
+    // separación entre enemigos — el mismo loop O(n²) de E2 (26-30 bichos = ~900 tests,
+    // holgado a 60 fps; cualquier "optimización" por velocidad deja a los droners sin
+    // orden y apilados contra el jugador: E2 verificado, no se toca). Única excepción
+    // E6: el Huerta QUIETA no acumula separación (es un ancla, no un peón).
     _eSep.set(0, 0, 0);
+    if (T.beh !== 'static')
     for (const o of enemies) {
       if (o === this) continue;
       const d = p.distanceTo(o.g.position);
@@ -1649,31 +1775,547 @@ class Enemy {
       }
     }
 
-    _eMove.copy(_eDir).multiplyScalar(this.speed).add(_eSep);
-    p.x += _eMove.x * dt; p.z += _eMove.z * dt;
+    // ---- movimiento: embestida > conducta propia > steering E2 ----
+    if (this.dashOn) { // Criopylot / Fundidor fase 2: línea rápida, sin steering
+      this.dashT -= dt;
+      if (this.dashT <= 0) this.dashOn = false;
+      p.x += this._dx * dt; p.z += this._dz * dt;
+    } else if (T.beh === 'static') {
+      p.x += _eSep.x * dt * 0.3; p.z += _eSep.z * dt * 0.3; // respira en su sitio
+    } else if (T.beh === 'kite') {
+      // espectro: mantiene ~8 m (acorta de lejos, retrocede de cerca, tangencia en la banda)
+      _eMove.copy(_eDir).multiplyScalar(dist > 9 ? this.speed : dist < 7 ? -this.speed : 0)
+        .addScaledVector(_eTmp.set(-_eDir.z, 0, _eDir.x), Math.sin(t * 0.9 + this.phase) * this.speed * 0.55)
+        .add(_eSep);
+      p.x += _eMove.x * dt; p.z += _eMove.z * dt;
+    } else if (T.beh === 'step') {
+      // glitch: saltos DISCRETOS de 0.5 m cada 0.3 s (no slide) + afterimage fantasma
+      this.stepT -= dt;
+      if (this.stepT <= 0) {
+        this.stepT = 0.3;
+        _eMove.copy(_eDir).multiplyScalar(0.5).addScaledVector(_eSep, 0.12);
+        const L = _eMove.length();
+        if (L > 0.5) _eMove.multiplyScalar(0.5 / L);
+        spawnGhost(p.x, p.z, this.g.scale.x, this.spr.rotation.y, this.hex); // fantasma en el sitio viejo
+        p.x += _eMove.x; p.z += _eMove.z;
+        this.hex ^= 1;                       // el tinte alterna cyan ↔ magenta…
+        Sfx.glitchZip();                     // …y el oído también
+      }
+    } else if (T.beh === 'lance') {
+      // lancellas: vuelo errático (deriva lateral senoidal sobre el steering de E2)
+      _eMove.copy(_eDir).multiplyScalar(this.speed)
+        .addScaledVector(_eTmp.set(-_eDir.z, 0, _eDir.x), Math.sin(t * 2.3 + this.phase) * this.speed * 0.8)
+        .add(_eSep);
+      p.x += _eMove.x * dt; p.z += _eMove.z * dt;
+    } else if (!this.boss) {
+      _eMove.copy(_eDir).multiplyScalar(this.speed).add(_eSep);
+      p.x += _eMove.x * dt; p.z += _eMove.z * dt;
+    }
+
     p.x = clamp(p.x, -ARENA + 1.2, ARENA - 1.2);
     p.z = clamp(p.z, -ARENA + 1.2, ARENA - 1.2);
     pushOutOfBoxes(p, 0.55 * T.scale);
+
+    // ---- conducta de ataque (telegrafía mediante) ----
+    if (this.spawnT >= 1 && game.state === 'play') {
+      if (this.boss) this.bossBehave(dt, t, dist);
+      else this.behave(dt, t, dist);
+    }
 
     // levitación + billboard SOLO yaw alineado a la cámara (estilo Doom): el sprite
     // siempre da de frente, sin flip → nunca se ve la "espalda" y no deforma con el
     // pitch (por eso un plano rotado en Y y no un Sprite de three, que hace billboard
     // total contra el plano de imagen y estira con la mirada arriba/abajo).
-    p.y = this.baseY + Math.sin(t * 3 + this.phase) * 0.14;
+    // E6: los que CAMINAN (esporeador/Huerta) apenas se despegan del piso.
+    const bobA = T.beh === 'spore' || T.beh === 'static' ? 0.03 : 0.14;
+    p.y = this.baseY + Math.sin(t * 3 + this.phase) * bobA;
     this.spr.rotation.y = camera.rotation.y;
 
     // E8-polish(a): recordar dónde se ve al enemigo (px CSS) — si muere fuera de la
     // vista, su popup de score se ancla a esta última posición conocida
     this.lastScr = screenOf(this.chest(_popV), this.lastScr);
 
-    // daño por contacto
+    // daño por contacto — E6: la embestida pega DURANTE todo el dash (25 de frente, una
+    // vez por carrera); el contacto común mantiene el radio de E2 (el Huerta quieta cobra
+    // su "radio 3 m" con hitbox × escala: 1.1×2.6+0.6 ≈ 3.5).
     this.hitCd -= dt;
-    if (dist < 1.1 * T.scale + 0.6 && this.hitCd <= 0 && this.spawnT >= 1) {
+    if (this.dashOn) {
+      if (!this.dashHit && dist < 1.3 * T.scale + 0.7) {
+        this.dashHit = true;
+        damagePlayer(this.type === 'fundidor' ? 30 : 25);
+        player.shakeT = Math.max(player.shakeT, 0.25); // el embiste se siente en la cámara
+      }
+    } else if (dist < 1.1 * T.scale + 0.6 && this.hitCd <= 0 && this.spawnT >= 1) {
       this.hitCd = 0.9;
       damagePlayer(T.dmg);
     }
   }
+
+  // ============ E6 — conductas por tipo (spec 4: todo new enemy entra por acá) =======
+  // Los que disparan telegrafían con startTell (flash + shake 0.3 s) y el disparo real
+  // corre cuando el tell vence. LOS = línea de visión libre contra los sólidos del nivel.
+  startTell(sec, fn) { if (this.tell > 0) return; this.tell = sec; this.tellQ = fn; this.flash(); }
+  blinkNear() { // posesivo / Confesor: salto a un punto DETRÁS o al LADO del jugador,
+                // dentro de 6 m, clamp arena y nunca dentro de un muro. (a = yaw manda
+                // hacia atrás: el offset 0 cae a la espalda, ±1.5 sale a los costados.)
+    for (let i = 0; i < 10; i++) {
+      const a = player.yaw + rand(-1.5, 1.5);
+      const d = rand(2.4, 6);
+      const x = clamp(player.pos.x + Math.sin(a) * d, -ARENA + 1.5, ARENA - 1.5);
+      const z = clamp(player.pos.z + Math.cos(a) * d, -ARENA + 1.5, ARENA - 1.5);
+      let wall = false;
+      for (const b of boxes)
+        if (x > b.min.x - 0.8 && x < b.max.x + 0.8 && z > b.min.z - 0.8 && z < b.max.z + 0.8) { wall = true; break; }
+      if (wall) continue;
+      burst(this.g.position, this.T.color, 10, 4, 0.9, 1.8); // ceniza en el origen
+      this.g.position.x = x; this.g.position.z = z;
+      burst(this.g.position, this.T.color, 10, 4, 0.9, 1.8); // y en el destino
+      Sfx.blink();
+      return;
+    }
+  }
+  startDash() {
+    const p = this.g.position;
+    const dx = player.pos.x - p.x, dz = player.pos.z - p.z;
+    const l = Math.hypot(dx, dz) || 1;
+    this._dx = dx / l * 19; this._dz = dz / l * 19;
+    this.dashOn = true; this.dashT = 0.6; this.dashHit = false; // 0.6 s de línea rápida
+    Sfx.dash(); // rugido corto de arranque
+  }
+  spawnPet(type, cap, msg) {
+    let n = 0; for (const e of enemies) if (e.owner === this) n++;
+    if (n >= cap) return;
+    const p = this.g.position;
+    // Vector3 de verdad: el ctor hace position.copy(pos) + burst(pos) y un {x,z} dejaría
+    // el y en NaN (las partículas nacerían invisibles — bug clásico de copiar planos).
+    const m = new Enemy(type, new THREE.Vector3(clamp(p.x + rand(-2.5, 2.5), -ARENA + 2, ARENA - 2),
+                                                0,
+                                                clamp(p.z + rand(-2.5, 2.5), -ARENA + 2, ARENA - 2)));
+    pushOutOfBoxes(m.g.position, 0.8);
+    m.owner = this;
+    (this.pets || (this.pets = [])).push(m);
+    if (msg) feed(`INVOCADO: ${m.T.name || m.type.toUpperCase()}`);
+  }
+  // relojes de jefe comunes: telegraph window + invocación por petT
+  bossCommon(dt, type, cap, interval, msg) {
+    this.pT -= dt;
+    if (this.pT <= 0) { this.pT = interval; this.spawnPet(type, cap, msg); }
+  }
+  behave(dt, t, dist) {
+    const T = this.T;
+    switch (T.beh) {
+      case 'spore': { // hongo: cada 4 s suelta un halo verde de 2 m (3 dmg/s por 3 s)
+        this.sporeT -= dt;
+        if (this.sporeT <= 0) {
+          this.sporeT = 4;
+          const p = this.g.position;
+          spawnZone('poison', p.x, p.z, 2, 3, 3);
+          burst(p, 0x6dff8a, 8, 3, 0.7, 1.5);
+          Sfx.sporePop();
+        }
+        break;
+      }
+      case 'lance': { // 1 lanza de lava lenta cada ~2.8 s (proyectil, NO hitscan)
+        this.atkT -= dt;
+        if (this.atkT <= 0 && dist < 20) {
+          this.atkT = 2.8;
+          const p = this.g.position;
+          // TODO numéricos antes del startTell: el tell corre 0.3 s DESPUÉS y los
+          // temporales de módulo (_eTmp) a esa altura ya son basura de otro enemigo.
+          const ox = p.x, oy = this.baseY + 0.4, oz = p.z;
+          _eTmp.set(player.pos.x - ox, (player.pos.y - 0.25) - oy, player.pos.z - oz).normalize();
+          const vx = _eTmp.x * 9, vy = _eTmp.y * 9, vz = _eTmp.z * 9;
+          this.startTell(0.3, () => {
+            fireBolt('lava', ox, oy, oz, vx, vy, vz, { dmg: 14, life: 3.6 });
+            Sfx.boltFire();
+          });
+        }
+        break;
+      }
+      case 'blink': { // posesivo: parpadea 0.5 s y salta cada 3-4 s (spec)
+        this.tpT -= dt;
+        if (this.tpT <= 0) { this.tpT = rand(3, 4); this.blinkNear(); }
+        break;
+      }
+      case 'kite': { // espectro: ráfaga de 3 bolts lentos en abanico cada ~3 s
+        this.atkT -= dt;
+        if (this.atkT <= 0 && dist < 17) {
+          this.atkT = 3;
+          const p = this.g.position;
+          const a0 = Math.atan2(player.pos.x - p.x, player.pos.z - p.z);
+          this.startTell(0.3, () => {
+            for (const off of [-0.2, 0, 0.2]) {
+              const a = a0 + off; // abanico ~±11°
+              fireBolt('bolt', p.x, this.baseY + 0.3, p.z,
+                       Math.sin(a) * 7, (player.pos.y - 0.35 - this.baseY - 0.3) * 0.08, Math.cos(a) * 7,
+                       { dmg: 9, life: 3.6 });
+            }
+            Sfx.boltFire();
+          });
+        }
+        break;
+      }
+      // droner/sprinter/brute y glitch: sin ataque a distancia — contacto (E2)
+    }
+  }
+
+  // ============ E6 — patrones de mini-jefe (spec 3) ================================
+  bossBehave(dt, t, dist) {
+    const p = this.g.position;
+    switch (this.T.beh) {
+      case 'bcrio': { // Criopylot: 1 droner de compañía c/8 s (máx 3) + embiste c/6 s
+        if (!this.dashOn) { // el dash es LÍNEA: el steering se corre durante la carrera
+          _eMove.copy(_eDir).multiplyScalar(this.speed).add(_eSep);
+          p.x += _eMove.x * dt; p.z += _eMove.z * dt;
+        }
+        this.bossCommon(dt, 'droner', 3, 8);
+        this.atkT -= dt;
+        if (this.atkT <= 0) { this.atkT = 6; this.startTell(0.3, () => this.startDash()); }
+        break;
+      }
+      case 'static': { // Padre Huerta: 5 esporas en abanico c/2.5 s (explotan en nube
+                       // de veneno de piso 3 s) + esporeadores c/10 s (máx 2)
+        this.atkT -= dt;
+        if (this.atkT <= 0) {
+          this.atkT = 2.5;
+          const a0 = Math.atan2(player.pos.x - p.x, player.pos.z - p.z);
+          this.startTell(0.3, () => {
+            for (let i = 0; i < 5; i++) {
+              const a = a0 + (i - 2) * 0.16; // abanico ~±23°
+              fireBolt('spore', p.x, 1.9, p.z,
+                       Math.sin(a) * 7.2, (player.pos.y - 1.1) * 0.1, Math.cos(a) * 7.2,
+                       { dmg: 6, life: 3.4 });
+            }
+            Sfx.sporePop();
+          });
+        }
+        this.bossCommon(dt, 'esporeador', 2, 10, 'HUERTA SIEMBRA');
+        break;
+      }
+      case 'bfundi': { // Fundidor: fase 1 loseta de lava c/3 s (splash r2 + charco 4 s
+                       // 8 dmg/s); fase 2 (hp≤50%) +50% velocidad y embiste c/6 s
+        const rage = this.hp <= this.T.hp * 0.5;
+        if (rage && this.phaseN === 1) {
+          this.phaseN = 2;
+          this.speed = this.T.speed * 1.5;
+          feed('FUNDIDOR ENROJECE — EL CAÑÓN AL ROJO');
+          Sfx.phaseUp();
+          this.flash(); popFxLight(p, 0xff3bd8, 240, 0.5);
+          this.atkT = 1.6; // la primera embestida agarrá al jugador desprevenido
+        }
+        if (!this.dashOn) { _eMove.copy(_eDir).multiplyScalar(this.speed).add(_eSep); p.x += _eMove.x * dt; p.z += _eMove.z * dt; }
+        this.atkT -= dt;
+        if (this.atkT <= 0 && !this.dashOn) {
+          if (!rage) { // loseta: tiro parabólico al pie del jugador
+            this.atkT = 3;
+            const x0 = p.x, y0 = this.baseY + 0.3, z0 = p.z;
+            const tx = player.pos.x, tz = player.pos.z;
+            const dx = tx - x0, dz = tz - z0, d = Math.hypot(dx, dz) || 1, tt = clamp(d / 10, 0.4, 1.6);
+            const vx = dx / tt, vz = dz / tt, vy = (player.pos.y - 1.7 - y0) / tt + 0.5 * 18 * tt;
+            this.startTell(0.3, () => {
+              fireBolt('lava', x0, y0, z0, vx, vy, vz, { dmg: 14, grav: 18, life: 4, splash: 2, lava: 1 });
+              Sfx.boltFire();
+            });
+          } else { this.atkT = 6; this.startTell(0.3, () => this.startDash()); }
+        }
+        break;
+      }
+      case 'bconf': { // El Confesor: kite de 9 m + ráfaga de 5 bolts c/2.6 s + posesivos
+                      // c/12 s (máx 2) — y salta CADA golpe conectado (ver takeDamage)
+        if (!this.dashOn) {
+          _eMove.copy(_eDir).multiplyScalar(dist > 10 ? this.speed : dist < 8 ? -this.speed * 0.8 : 0)
+            .addScaledVector(_eTmp.set(-_eDir.z, 0, _eDir.x), Math.sin(t * 0.8 + this.phase) * this.speed * 0.5)
+            .add(_eSep);
+          p.x += _eMove.x * dt; p.z += _eMove.z * dt;
+        }
+        if (this.tpT > 0) { this.tpT -= dt; if (this.tpT <= 0) { this.tpT = -1; this.blinkNear(); } }
+        this.atkT -= dt;
+        if (this.atkT <= 0 && dist < 22) {
+          this.atkT = 2.6;
+          const a0 = Math.atan2(player.pos.x - p.x, player.pos.z - p.z);
+          this.startTell(0.3, () => {
+            for (let i = 0; i < 5; i++) {
+              const a = a0 + (i - 2) * 0.15;
+              fireBolt('bolt', p.x, this.baseY + 0.2, p.z,
+                       Math.sin(a) * 7.5, (player.pos.y - 0.4 - this.baseY - 0.2) * 0.08, Math.cos(a) * 7.5,
+                       { dmg: 10, life: 3.6 });
+            }
+            Sfx.boltFire();
+          });
+        }
+        this.bossCommon(dt, 'posesivo', 2, 12, 'EL CONFESOR ABSUELVE');
+        break;
+      }
+      case 'bmoris': { // MORIS-9: núcleo que órbita el centro; 3 fases (100/66/33%):
+                       // f1 rayo dirigible · f2 invoca 2 glitches + anillo de bolts ·
+                       // f3 todo más rápido + pantallazo glitch cian
+        this.orbA += dt * 0.5 * (this.phaseN >= 3 ? 1.7 : 1);
+        const r = 13;
+        const nx = Math.cos(this.orbA) * r, nz = Math.sin(this.orbA) * r;
+        const stuck = testWall(p.x, p.z, 1.2), targetWall = testWall(nx, nz, 1.0);
+        if (!stuck && !targetWall && Math.hypot(nx - p.x, nz - p.z) > 2.2) { // vuela a su
+          const k = Math.min(1, dt * this.speed / Math.max(0.001, Math.hypot(nx - p.x, nz - p.z))); // órbita sin
+          p.x += (nx - p.x) * k; p.z += (nz - p.z) * k;                       // atravesar tapas
+        }
+        const f = this.phaseN;
+        const nf = this.hp > this.T.hp * 0.66 ? 1 : this.hp > this.T.hp * 0.33 ? 2 : 3;
+        if (nf !== f) {
+          this.phaseN = nf;
+          feed(nf === 2 ? 'MORIS-9 DESPLIEGA ANILLO' : 'MORIS-9 EN PÁNICO — LA REALIDAD PARPADEA');
+          Sfx.phaseUp(); this.flash(); popFxLight(p, 0x54f0ff, 300, 0.5);
+          if (nf === 2) { this.spawnPet('glitch', 2, 'CLON GLITCH DETECTADO'); this.spawnPet('glitch', 2, 'CLON GLITCH DETECTADO'); }
+        }
+        const fast = nf >= 3 ? 0.65 : 1;
+        this.atkT -= dt;
+        if (this.atkT <= 0) { // f1/f3: rayo lento DIRIGIBLE (homing suave, no hitscan)
+          this.atkT = 2.6 * fast;
+          const a0 = Math.atan2(player.pos.x - p.x, player.pos.z - p.z);
+          this.startTell(0.3, () => {
+            fireBolt('bolt', p.x, this.baseY + 0.2, p.z,
+                     Math.sin(a0) * 6.5, (player.pos.y - 0.5 - this.baseY - 0.2) * 0.07, Math.cos(a0) * 6.5,
+                     { dmg: 14, homing: 1.1, life: 5.5 });
+            Sfx.boltFire();
+          });
+        }
+        if (nf >= 2) { // f2/f3: anillo de bolts en círculo
+          this.p2T = (this.p2T || 4.5) - dt;
+          if (this.p2T <= 0) {
+            this.p2T = 5.5 * fast;
+            const n = nf >= 3 ? 12 : 8, off = rand(0, 6.28);
+            this.startTell(0.3, () => {
+              for (let i = 0; i < n; i++) {
+                const a = off + i / n * 6.2832;
+                fireBolt('bolt', p.x, 1.7, p.z, Math.sin(a) * 6, 0, Math.cos(a) * 6,
+                         { dmg: 9, life: 4 });
+              }
+              Sfx.boltFire();
+            });
+          }
+        }
+        if (nf >= 3) { // f3: pantallazo glitch cian (el retro de E1 ya hace de la mitad)
+          this.p3T = (this.p3T || 2) - dt;
+          if (this.p3T <= 0) { this.p3T = rand(1.4, 2.4); gflash = 0.11; popFxLight(p, 0x54f0ff, 120, 0.12); }
+        }
+        break;
+      }
+    }
+    // pinza anti-emparedamiento para TODO jefe móvil (el quieteísmo del Huerta no aplica)
+    if (this.T.beh !== 'static' && testWall(p.x, p.z, 0.9 * this.T.scale)) {
+      const cx = p.x, cz = p.z;
+      pushOutOfBoxes(p, 1.1 * this.T.scale);
+      if (p.x === cx && p.z === cz) { // sigue trabado: empujón hacia el centro
+        const l = Math.hypot(p.x, p.z) || 1;
+        p.x -= p.x / l * 0.4; p.z -= p.z / l * 0.4;
+        pushOutOfBoxes(p, 0.9 * this.T.scale);
+      }
+    }
+  }
 }
+
+/* ============================================================ E6 — sistema de campo:
+   zonas de piso (esporas/lava), proyectiles ENEMIGOS con pools de 32 por tipo, y los
+   afterimages del glitch. Todo viaja en arrays de módulo (como los cohetes de E4a):
+   NINGUNO vive en `world`, así que sobreviven el rebuild de buildArena a propósito —
+   quien los borra es resetArenaCombat() (beginLevel y respawn pasan por ahí).
+   Balances de la spec: halo verde 2 m / 3 dmg/s / 3 s · lava 8 dmg/s / 4 s ·
+   lanza de lancellas 14 dmg contra muros se apaga (NO es hitscan) · loseta del
+   Fundidor splash r2 + charco de lava. */
+
+// test rápido xz vs AABBs del nivel (sin Y: los jefes vuelan por encima de todo)
+function testWall(x, z, r) {
+  for (const b of boxes)
+    if (x > b.min.x - r && x < b.max.x + r && z > b.min.z - r && z < b.max.z + r) return true;
+  return false;
+}
+
+// blob radial para las zonas de piso: núcleo opaco → borde suave (con AdditiveBlending
+// sobre el suelo de E5 queda exactamente como el charco magenta del Invernadero)
+let _zoneTex = null;
+function zoneTex() {
+  if (!_zoneTex) {
+    const cv = document.createElement('canvas'); cv.width = cv.height = 64;
+    const c = cv.getContext('2d');
+    const g = c.createRadialGradient(32, 32, 4, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.55, 'rgba(255,255,255,.8)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+    _zoneTex = new THREE.CanvasTexture(cv);
+    _zoneTex.colorSpace = THREE.SRGBColorSpace;
+  }
+  return _zoneTex;
+}
+const ZONE_COL = { poison: neon(0x5eff8a, 1.25), lava: neon(0xff6a2a, 1.6) };
+const zones = []; // máx 12 vivos (nubes + charcos comparten el presupuesto)
+{
+  const geo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+  for (let i = 0; i < 12; i++) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, map: zoneTex(), transparent: true,
+      opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.y = 0.06; mesh.visible = false;
+    scene.add(mesh);
+    zones.push({ mesh, mat, life: 0, max: 1, r: 2, dps: 0, tick: 0, lava: false, phase: 0 });
+  }
+}
+function spawnZone(kind, x, z, r, life, dps, lava = false) {
+  const h = zones.find(z => z.life <= 0) || zones[0]; // saturado: se pisa la más vieja
+  const p = new THREE.Vector3(x, 0, z);
+  pushOutOfBoxes(p, 0.4); // una nube sobre una tapa no se ve: la movemos al borde
+  h.mesh.position.set(p.x, 0.06, p.z);
+  h.mesh.scale.setScalar(r * 2);
+  h.mat.color.copy(ZONE_COL[kind]);
+  h.life = h.max = life; h.r = r; h.dps = dps; h.tick = 0.3; h.lava = lava;
+  h.phase = rand(0, 6.28);
+  h.mesh.visible = true;
+}
+function zonesUpdate(dt) {
+  for (const z of zones) {
+    if (z.life <= 0) continue;
+    z.life -= dt;
+    if (z.life <= 0) { z.mesh.visible = false; z.mat.opacity = 0; continue; }
+    const k = z.life / z.max;
+    z.mat.opacity = (0.5 + Math.sin(game.time * 7 + z.phase) * 0.08) * (k > 0.25 ? 1 : k * 4);
+    z.tick -= dt;
+    if (z.tick <= 0) { // tic de daño: pisar la nube NO es un DoT silencioso (spec: el
+      z.tick = 0.5;    // naranja no es suelo) — 0.5 s por golpe con audio de aviso
+      const dx = player.pos.x - z.mesh.position.x, dz = player.pos.z - z.mesh.position.z;
+      if (dx * dx + dz * dz < z.r * z.r) { Sfx.hazardTick(); damagePlayer(z.dps * 0.5); }
+    }
+  }
+}
+function clearZones() { for (const z of zones) { z.life = 0; z.mesh.visible = false; z.mat.opacity = 0; } }
+
+/* ---- Proyectiles enemigos: TRES pools de 32 (spec 7: "máx 32 vivos compartidos por
+   tipo, reuse"). bolt = violeta (espectro/Confesor/MORIS) · lava = naranja (lanzas y
+   loseta del Fundidor) · spore = verde (esporas del Huerta; explotan en nube de piso).
+   Física prestada del patrón de cohetes/células de E4: punto vs AABB, muros, vida.
+   Solo le hacen daño AL JUGADOR (explode() de E4 no sirve acá: lastimaría a los
+   propios minions). Campos por tiro: dmg/grav/homing/splash/lava. */
+const EPROJ = {
+  bolt:  { geo: new THREE.SphereGeometry(0.13, 8, 6), col: 0xaa5cff },
+  lava:  { geo: new THREE.BoxGeometry(0.24, 0.24, 0.24), col: 0xff7a2a },
+  spore: { geo: new THREE.SphereGeometry(0.17, 8, 6), col: 0x5eff8a },
+};
+const eprojs = [];
+const eProjBy = {}; // kind → slots del pool (cacheado: fireBolt dispara SIN alloc)
+for (const kind in EPROJ) {
+  const S = EPROJ[kind];
+  eProjBy[kind] = [];
+  for (let i = 0; i < 32; i++) {
+    const mat = new THREE.MeshBasicMaterial({ color: neon(S.col, 2.1) });
+    const mesh = new THREE.Mesh(S.geo, mat);
+    mesh.visible = false; mesh.frustumCulled = false;
+    scene.add(mesh);
+    const p = { kind, mesh, vel: new THREE.Vector3(), life: 0, dmg: 1, grav: 0,
+                homing: 0, splash: 0, lava: 0, trail: 0 };
+    eprojs.push(p); eProjBy[kind].push(p);
+  }
+}
+function fireBolt(kind, x, y, z, vx, vy, vz, o = {}) {
+  const arr = eProjBy[kind];
+  const q = arr.find(p => p.life <= 0) || arr[0]; // saturado: recicla el más viejo
+  q.mesh.position.set(x, y, z);
+  q.vel.set(vx, vy, vz);
+  q.life = o.life || 3.5;
+  q.dmg = o.dmg || 10; q.grav = o.grav || 0; q.homing = o.homing || 0;
+  q.splash = o.splash || 0; q.lava = o.lava || 0; q.trail = 0;
+  q.mesh.visible = true;
+}
+// estallido SOLO-jugador (impacto directo, splash de loseta o expiración con splash)
+function eBoom(pos, dmg, r) {
+  burst(pos, 0xff7a2a, 12, 7, 1.2, 2);
+  popFxLight(pos, 0xff9a3d, 180, 0.3);
+  const pd = Math.hypot(player.pos.x - pos.x, player.pos.y - pos.y, player.pos.z - pos.z);
+  if (pd < r) damagePlayer(dmg * clamp(1 - pd / r, 0.25, 1));
+}
+const _ebP = new THREE.Vector3(), _ebD = new THREE.Vector3();
+function eProjUpdate(dt) {
+  for (const q of eprojs) {
+    if (q.life <= 0) continue;
+    q.life -= dt;
+    const p = q.mesh.position;
+    if (q.homing > 0) { // MORIS f1: "rayo lento dirigible" — gira su velocidad hacia
+      q.trail -= dt;    // el jugador con rate limitado: se esquiva corriendo, no rezando
+      _ebD.set(player.pos.x - p.x, player.pos.y - 0.1 - p.y, player.pos.z - p.z).normalize();
+      _ebP.copy(q.vel).normalize().lerp(_ebD, Math.min(1, q.homing * dt)).normalize();
+      q.vel.copy(_ebP).multiplyScalar(q.vel.length());
+    }
+    if (q.grav) q.vel.y -= q.grav * dt; // loseta del Fundidor: parábola
+    p.addScaledVector(q.vel, dt);
+    const S = EPROJ[q.kind];
+    q.trail -= dt;
+    if (q.trail <= 0 && q.kind !== 'lava') { q.trail = 0.07; burst(p, S.col, 1, 0.4, 0.4, 1.6); }
+    let hitWall = Math.abs(p.x) >= ARENA - 0.15 || Math.abs(p.z) >= ARENA - 0.15 || p.y <= 0.05;
+    if (!hitWall) for (const b of boxes) // mismo test punto-vs-AABB de los cohetes
+      if (p.x > b.min.x && p.x < b.max.x && p.y > b.min.y && p.y < b.max.y && p.z > b.min.z && p.z < b.max.z) { hitWall = true; break; }
+    let hitPlayer = false;
+    if (!hitWall) { // cápsula burda del jugador: radio 0.55 × vertical 2.2 (ojo E8:
+      const dx = player.pos.x - p.x, dz = player.pos.z - p.z, dy = player.pos.y - 0.75 - p.y; // si hay salto alto, el dy perdona)
+      hitPlayer = dx * dx + dz * dz < 0.55 * 0.55 && dy > -1.2 && dy < 1.1;
+    }
+    const expired = q.life <= 0;
+    if (!hitPlayer && !hitWall && !expired) continue;
+    q.life = 0; q.mesh.visible = false;
+    if (hitPlayer && !q.splash) {
+      damagePlayer(q.dmg);
+      if (q.kind === 'spore') { // la espora del Huerta EXPLOTA contra lo que toca — en la
+        spawnZone('poison', p.x, p.z, 1.7, 3, 3); // cara también queda el charco verde
+        burst(p, 0x5eff8a, 8, 3, 0.7, 1.4);
+        Sfx.sporePop();
+      }
+    } else if (q.splash) {
+      eBoom(p, q.dmg + 14, q.splash); // loseta: la explosión pesa más que el impacto
+      if (q.lava) spawnZone('lava', p.x, p.z, 1.6, 4, 8, true); // el naranja NO es suelo
+    } else if (q.kind === 'spore') {
+      spawnZone('poison', p.x, p.z, 1.7, 3, 3);                 // espora del Huerta → nube
+      burst(p, 0x5eff8a, 8, 3, 0.7, 1.4);
+      Sfx.sporePop();
+    } else if (hitWall || q.kind === 'bolt') {
+      burst(p, S.col, 6, 3, 0.5, 1.7);                          // pop limpio contra geometría
+    }
+  }
+}
+function clearEProj() { for (const q of eprojs) { q.life = 0; q.mesh.visible = false; } }
+
+/* ---- Afterimages del glitch: pool de 8 planos que heredan el arte del glitch (geo +
+   texture-source compartidos — el clon solo lleva su offset/opacidad, el patrón E2).
+   Vida 0.2 s con fade: es el "fantasma barato" de la spec (no un Enemy). */
+const ghosts = [];
+{
+  const A = enemySprite('glitch');
+  for (let i = 0; i < 8; i++) {
+    const tex = A.tex.clone(); tex.repeat.set(0.5, 1); tex.offset.x = 0;
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0,
+      depthWrite: false, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(A.geo, mat);
+    mesh.visible = false; mesh.frustumCulled = false;
+    scene.add(mesh);
+    ghosts.push({ mesh, mat, life: 0 });
+  }
+}
+function spawnGhost(x, z, scale, yaw, hex) {
+  const a = ghosts.find(a => a.life <= 0) || ghosts[0];
+  a.mesh.position.set(x, 0.95 * scale + 0.1, z);
+  a.mesh.rotation.y = yaw;
+  a.mesh.scale.setScalar(scale);
+  a.mat.color.setHex(hex ? 0xff3bd8 : 0x54f0ff); // el fantasma sale en el color del frame
+  a.life = 0.2;
+  a.mesh.visible = true;
+}
+function ghostsUpdate(dt) {
+  for (const a of ghosts) {
+    if (a.life <= 0) continue;
+    a.life -= dt;
+    if (a.life <= 0) { a.mesh.visible = false; continue; }
+    a.mat.opacity = a.life * 1.8; // 0.36 → 0 lineal
+  }
+}
+function clearGhosts() { for (const a of ghosts) { a.life = 0; a.mesh.visible = false; } }
+
+// E6 estado HUD global: _bossK = clave de la barra (nombre vigente), gfxT = pantallazo
+// glitch de MORIS-9 f3 (sobre el DOM #gflash). Reset en resetArenaCombat.
+let _bossK = null, gfxT = 0;
 
 /* ============================================================ E3 — pickups, drops y popups
    Reemplaza al viejo medkit 3D hardcoded (fuera de juego: el sistema nuevo cubre vida,
@@ -1981,6 +2623,7 @@ const game = {
   bossPending: false,      // oleadas completas: el elite aún no pisó la arena
   bossDelay: 0,            // respiro tras el "regalo de MORIS" (compilador en N5) antes del elite
   bossGuard: false,        // onBossKilled corre una sola vez por nivel
+  slowmoT: 0, completeT: 0, // E6: muerte de MORIS-9 → 1.5 s de slow-mo del FX y crédito
   portalOpen: false, portalPending: false, midSpawned: false,
   respawnPending: false,       // muerte con vidas: el respawn se aplica al cerrar el loop de enemigos
   spawnQueue: [], spawnT: 0,
@@ -2028,15 +2671,25 @@ function refreshContinueBtn() {
   b.textContent = `CONTINUAR SECTOR ${s ? s.level : 1} · ${s ? LEVELS[s.level - 1].name : ''}`;
 }
 
+/* E6 — oleada por TABLA: LEVELS[].spawnWeights es la spec declarativa del bestiario
+   de cada sector (peso relativo por tipo). La CANTIDAD sigue la fórmula de E5
+   (5+2·n global, tope 26): el multiplicador de cantidad por nivel se mantiene tal cual.
+   Redondeo grande→chico (los pesados llenan primero) y los que pesan tan poco que
+   el redondeo los borra tienen 1 unidad por sorteo; el último tipo recibe el saldo
+   para que el total cierre exacto. */
 function buildWave(n) {
+  const w = levelDef().spawnWeights;
   const total = Math.min(5 + 2 * n, 26);
-  const brutes = n >= 3 ? Math.min(Math.floor((n - 1) / 2), 4) : 0;
-  const sprinters = n >= 2 ? Math.min(Math.floor(n * 0.9), total - 2 - brutes) : 0;
-  const drones = total - brutes - sprinters;
+  const keys = Object.keys(w).sort((a, b) => w[b] - w[a]);
+  const sum = keys.reduce((s, k) => s + w[k], 0);
   const q = [];
-  for (let i = 0; i < drones; i++) q.push('droner');
-  for (let i = 0; i < sprinters; i++) q.push('sprinter');
-  for (let i = 0; i < brutes; i++) q.push('brute');
+  let acc = 0;
+  keys.forEach((k, i) => {
+    const cnt = i === keys.length - 1 ? total - acc
+      : (total * w[k] >= 1 ? Math.round(total * w[k] / sum) : (Math.random() < total * w[k] / sum ? 1 : 0));
+    acc += cnt;
+    for (let j = 0; j < cnt; j++) q.push(k);
+  });
   return q.sort(() => Math.random() - 0.5);
 }
 
@@ -2075,17 +2728,27 @@ function startLevelWave(i) {
   updateHud();
 }
 
-// mini-jefe del sector: elite sobre un tipo existente (E6 los tendrá con conducta propia)
-const BOSS_TYPE = ['droner', 'sprinter', 'brute', 'brute', 'brute'];
+/* ---- E6: mini-jefes con tipo, arte y patrón PROPIOS (ENEMY_TYPES rows arriba). El
+   genérico elite de E5 (scale×2.2 hp×6) quedó reemplazado; la firma del spawn queda igual. ---- */
+const BOSS_TYPE = ['criopylot', 'huerta', 'fundidor', 'confesor', 'moris9'];
+function spawnBossPoint() {
+  // centro-norte como el elite viejo, pero DESTRABADO de muros/props (el Huerta vive de
+  // su anchor: nace quieto y un spawn dentro de una tapa lo hundiría para siempre)
+  const x = (game.level === 2 ? 0 : rand(-9, 9)), z = -10;
+  const p = { x, z };
+  pushOutOfBoxes(p, 1.6);
+  return new THREE.Vector3(clamp(p.x, -ARENA + 3, ARENA - 3), 0, clamp(p.z, -ARENA + 3, ARENA - 3));
+}
 function spawnBoss() {
   game.boss = true;
   game.bossGuard = false;
-  new Enemy(BOSS_TYPE[game.level - 1] || 'brute', spawnPoint(), true);
+  const type = BOSS_TYPE[game.level - 1] || 'criopylot';
+  const b = new Enemy(type, spawnBossPoint(), true);
   const msg = $('wavemsg');
-  msg.textContent = 'MINI-JEFE';
+  msg.textContent = b.T.name;
   msg.classList.remove('show'); void msg.offsetWidth; msg.classList.add('show');
-  feed(`SECTOR ${game.level}: MINI-JEFE DETECTADO`);
-  Sfx.bossSpawn();
+  feed(`SECTOR ${game.level}: ${b.T.name} DESPIERTA`);
+  Sfx.bossSpawn(type); // queja grave ÚNICA por jefe (spec 3)
   updateHud();
 }
 
@@ -2108,13 +2771,20 @@ function onWaveCleared() {
 }
 
 // limpieza de combate común a arranque de sector y respawn (Nada volando entre niveles:
-// cohetes/células/orbes/rayos/casas fuera — hotfix E4a: el reset no puede dejar proyectiles huérfanos)
+// cohetes/células/orbes/rayos/casas fuera — hotfix E4a: el reset no puede dejar proyectiles huérfanos.
+// E6: ídem con los pools ENEMIGOS (bolts/esporas/lava/zonas/afterimages): ni proyectiles
+// ni charcos de veneno sobreviven el cambio de nivel — validación pedida en el pedido).
 function resetArenaCombat() {
   while (enemies.length) enemies[0].remove();
   clearPickups();
   clearRockets(); clearCells(); clearOrbs(); clearBeams();
+  clearEProj(); clearZones(); clearGhosts(); // E6
   cancelRailCharge();
   portalMesh = null; // el mesh vive en world: lo libera disposeWorld del próximo build
+  // E6 HUD: barra de jefe y pantallazo glitch se van con el combate
+  _bossK = null; gfxT = 0;
+  $('bossbar').classList.remove('show');
+  $('gflash').style.opacity = '0';
 }
 // puntería/cadencia/cámara a cero + spawn point del nivel (sur, mirando al centro)
 function resetCombatState() {
@@ -2205,6 +2875,8 @@ function die() {
   clearCells();   // E4b: ídem células de Mate
   clearOrbs();    // E4b: ídem orbes del compilador
   clearBeams();   // E4b: update() congela su fade — la línea del riel se borra acá
+  clearEProj(); clearZones(); clearGhosts(); // E6: ídem proyectiles/zonas/fantasmas enemigos
+  gfxT = 0; $('gflash').style.opacity = '0'; // E6: y el pantallazo glitch no queda colgado
   cancelRailCharge(); // E4b: el anillo del riel no queda encendido sobre la pantalla de muerte
   document.exitPointerLock();
   dispatchEvent(new CustomEvent('gamestate', { detail: game.state })); // suelta input táctil
@@ -2275,7 +2947,10 @@ function spawnPortal() {
 
 // el elite murió: rollKillDrop(boss) tiró el casco + crate + botiquín; ahora abren la
 // salida y el arma del guion espera en la ANTESALA, antes del portal (no te la perdés).
-function onBossKilled() {
+// E6 — MORIS-9: su muerte es el FINAL (spec 3): slow-mo 1.5 s del FX y campaignComplete
+// directo, sin portal. El drop seguro sigue siendo casco+crate+botiquín: el arma de
+// antesala la puso E5 con weapons.exit (acá NO se duplica; N5 no tiene exit weapon).
+function onBossKilled(boss) {
   if (game.bossGuard) return;
   game.bossGuard = true;
   game.boss = false;
@@ -2285,8 +2960,16 @@ function onBossKilled() {
     spawnWeaponPickup(exitW, new THREE.Vector3(3.2, 0, -ARENA + 8));
     feed(`SEÑAL: ${WEAPONS[exitW].name} EN LA ANTESALA`);
   }
+  if (game.level === LEVELS.length) {
+    game.slowmoT = 1.5; game.completeT = 1.5; // el loop consume slow-mo y luego canta la campaña
+    player.shakeT = 0.35;                     // el núcleo explota EN la cara (shake de E4b)
+    Sfx.bfgBoom();
+    if (boss) popFxLight(boss.g.position, 0x54f0ff, 420, 0.9);
+    toast('MORIS-9 FUERA DE LÍNEA', 'weapon big');
+    return;
+  }
   spawnPortal();
-  toast(game.level === LEVELS.length ? 'MORIS-9 CAE — PISÁ EL PORTAL' : 'MINI-JEFE ELIMINADO', 'weapon big');
+  toast('MINI-JEFE ELIMINADO', 'weapon big');
 }
 
 // pisar el umbral: último sector = final de campaña; si no, terminal y sector siguiente
@@ -2366,6 +3049,7 @@ function beginLevel(n) {
   game.portalOpen = false; game.portalPending = false;
   game.boss = false; game.bossPending = false; game.bossGuard = false;
   game.midSpawned = false; game.bossDelay = 0;
+  game.slowmoT = 0; game.completeT = 0; // E6: si el retry llega con el core a medio explotar
   portalCd = 0;
   resetSOFT(false); // arena limpia, hp100/armor0, mags llenos, POOLS INTACTOS entre niveles
   const d = levelDef();
@@ -2392,6 +3076,7 @@ function campaignStart(level, snap) {
       if (W.magSize > 0) player.mags[id] = W.magSize;
     }
     beginLevel(level);
+    window.__qaStep = `beginLevel(${level}) ok`;
     game.state = 'play';
     dispatchEvent(new CustomEvent('gamestate', { detail: 'play' }));
     return;
@@ -2468,6 +3153,30 @@ function updateLives() {
   const on = '♥'.repeat(Math.max(0, Math.min(LIVES_MAX, game.lives)));
   const off = game.lives < LIVES_MAX ? `<span class="off">${'♥'.repeat(LIVES_MAX - Math.max(0, game.lives))}</span>` : '';
   $('lives').innerHTML = on + off;
+}
+
+/* ---- E6 — barra de JEFE (spec 5): arriba y centrada, SOLO con un boss vivo; nombre +
+   hp proporcional. Mismo cuidado DOM del archivo: el nombre solo se toca cuando cambia
+   y el ancho se escribe con string-cache (update corre a 60 fps, el DOM no). La resetea
+   resetArenaCombat (beginLevel/respawn). --bc tiñe el borde en el color del jefe. ---- */
+function bossHud() {
+  const b = enemies.find(e => e.boss && e.spawnT > 0);
+  const bar = $('bossbar');
+  if (!b) {
+    if (_bossK !== null) { _bossK = null; bar.classList.remove('show'); }
+    return;
+  }
+  if (_bossK !== b.T.name) {
+    _bossK = b.T.name;
+    $('bossname').textContent = b.T.name;
+    const hex = '#' + (b.T.color >>> 0).toString(16).padStart(6, '0');
+    bar.style.setProperty('--bc', hex);
+    $('bossfill').style.background = `linear-gradient(90deg,#6b1020,${hex})`;
+    bar.classList.add('show');
+  }
+  const w = (clamp(b.hp / b.T.hp, 0, 1) * 100).toFixed(1) + '%';
+  const f = $('bossfill');
+  if (f._w !== w) { f._w = w; f.style.width = w; }
 }
 
 function updateHud() {
@@ -3601,9 +4310,16 @@ function fireWeapon() {
 const clock = new THREE.Clock();
 let bobT = 0;
 
-function update(dt) {
+function update(dt, rdt) {
   game.time += dt;
   const t = game.time;
+
+  // E6 — pantallazo glitch de MORIS-9 f3 (cian, 0.11 s): el clock es REAL (rdt) para
+  // que el efecto no se estire con el slow-mo del final. #gflash vive en index.html.
+  if (gfxT > 0) {
+    gfxT = Math.max(0, gfxT - rdt);
+    $('gflash').style.opacity = gfxT > 0 ? '0.5' : '0';
+  }
 
   /* --- movimiento del jugador (temps de módulo: sin alloc por frame) */
   const f = _pf.set(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
@@ -3761,6 +4477,9 @@ function update(dt) {
   rocketsUpdate(dt); // cohetes de Kira en vuelo (pool 24, sin alloc)
   updateCells(dt);   // E4b: células de Mate (pool 16, daño directo al impacto)
   updateOrbs(dt);    // E4b: orbes del compilador (pool 6; detonan al impactar o a los 3 s)
+  eProjUpdate(dt);   // E6: proyectiles ENEMIGOS (3 pools de 32: bolts/esporas/lava)
+  zonesUpdate(dt);   // E6: nubes de esporas y charcos de lava del piso (Daño al pisar)
+  ghostsUpdate(dt);  // E6: afterimages del glitch (pool 8, vida 0.2 s)
 
   /* --- enemigos (E4a: loop inverso — el DoT de quemado puede matar al enemigo desde su
          propio update() y splicea `enemies` a mitad de recorrido; yendo al revés el
@@ -3770,6 +4489,8 @@ function update(dt) {
   // E5: la muerte con vidas se procesa ACÁ (die() difiere: su reset vaciaría `enemies`
   // dentro del loop de arriba). El frame de la muerte no spawna oleada nueva: next frame.
   if (game.respawnPending) { game.respawnPending = false; doRespawn(); }
+
+  bossHud(); // E6: barra del jefe (después del loop: el hp ya está actualizado)
 
   /* --- spawn / oleadas (E5: por nivel → mini-jefe → portal) --- */
   if (game.intermission > 0) {
@@ -3788,7 +4509,10 @@ function update(dt) {
       game.bossDelay -= dt;
       if (game.bossDelay <= 0) game.bossPending = true;
     }
-    else if (!game.portalOpen) onWaveCleared(); // tras el boss ya no hay oleadas: solo portal
+    // E6: bossGuard = el jefe del sector ya murió — en N5 no hay portal (la campaña se
+    // cierra con slow-mo), y sin este guard onWaveCleared re-arma bossPending: MORIS-9
+    // resucitaría en plena cuenta de crédito.
+    else if (!game.portalOpen && !game.bossGuard) onWaveCleared();
   }
 
   portalTick(dt); // E5: pisar el portal del norte = sector siguiente (touch/mando incluidos)
@@ -3899,10 +4623,20 @@ function autoDegrade(now) {
 
 function loop() {
   requestAnimationFrame(loop);
-  const dt = Math.min(clock.getDelta(), 0.05);
-  pollGamepad(dt); // cada frame, play o pausa (Start tiene que poder reanudar)
+  const rdt = Math.min(clock.getDelta(), 0.05); // dt REAL del frame (relojes, input, HUD)
+  let dt = rdt;
+  // E6 — MORIS-9 murió: 1.5 s de slow-mo (el dt de juego al 30%; el clock real manda, así
+  // el efecto dura 1.5 s de verdad) y recién ahí campaignComplete(). Todo el update se
+  // frena parejo porque recibe el dt escalado — los FX del núcleo son los que flotan.
+  if (game.slowmoT > 0) { game.slowmoT = Math.max(0, game.slowmoT - rdt); dt *= 0.3; }
+  // countdown del crédito en tiempo real; si el jugador muere en el ínterin se congela
+  if (game.completeT > 0 && game.state === 'play') {
+    game.completeT -= rdt;
+    if (game.completeT <= 0) { game.completeT = 0; campaignComplete(); }
+  }
+  pollGamepad(rdt); // cada frame, play o pausa (Start tiene que poder reanudar) — reloj real
   const prev = game.state;
-  if (game.state === 'play') update(dt);
+  if (game.state === 'play') update(dt, rdt); // rdt: el pantallazo glitch no se estira con el slow-mo
   if (game.state !== prev) dispatchEvent(new CustomEvent('gamestate', { detail: game.state })); // ex: muerte dentro de update → soltar input táctil
   updateWorldFx(dt, clock.elapsedTime);
   // retro necesita el composer SIEMPRE (el upscale nearest es su último pase); el bloom
@@ -3939,6 +4673,8 @@ $('sector').textContent = game.level;
 updateHud();
 window.__dbg = () => ({ state: game.state, wave: game.wave, waveIn: game.waveIn, en: enemies.length,
   level: game.level, lives: game.lives, boss: enemies.some(e => e.boss), // E5: campaña
+  bossName: (enemies.find(e => e.boss) || { T: {} }).T.name || '',       // E6: qué jefe está en pie
+  bossHp: Math.ceil((enemies.find(e => e.boss) || { hp: 0 }).hp),        // E6: qa de la barra
   portal: game.portalOpen ? 1 : 0,
   q: game.spawnQueue.length, hp: Math.round(player.hp), score: game.score,
   armor: Math.round(player.armor), // E3: recursos
@@ -3946,6 +4682,9 @@ window.__dbg = () => ({ state: game.state, wave: game.wave, waveIn: game.waveIn,
   mag: curMag(), weapon: player.weaponId, pickups: pickups.length,
   owned: [...player.owned], cooling: +player.cooling.toFixed(2), // E4a: arsenal
   pk: pickups.map(p => [Math.round(p.mesh.position.x), Math.round(p.mesh.position.z)]), // test E3
+  eProj: eprojs.reduce((n, p) => n + (p.life > 0 ? 1 : 0), 0),   // E6: pools de 32 compartidos
+  zones: zones.reduce((n, z) => n + (z.life > 0 ? 1 : 0), 0),    // E6: nubes/charcos vivos
+  slowmo: +game.slowmoT.toFixed(2),                              // E6: lento del final
   inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn, retro: retroOn,
   spriteMode: true, // E2: enemigos = sprite billboard (constante: no hay fallback 3D)
   touchMode: TOUCH_MODE, firing, gamepad: gp.connected,
@@ -3985,13 +4724,21 @@ window.__probe = () => {
    estáticos frente a la cámara en el título, para iterar sprites.js sin spawnear nada
    (útil también en E6). Se ocultan al entrar en play; nada más del gameplay los toca. */
 if (new URLSearchParams(location.search).has('sprite') || localStorage.getItem('moris-sprites') === '1') {
-  const pre = ['droner', 'sprinter', 'brute'].map((type, i) => {
+  // E6: preview de las 13 siluetas (3 heredados + 5 mobs + 5 jefes): mobs en la fila
+  // de adelante, jefes una fila más atrás y más lejos (tapan menos y se lee su escala).
+  const mobs = ['droner', 'sprinter', 'brute', 'esporeador', 'lancellas', 'posesivo', 'espectro', 'glitch'];
+  const jefes = ['criopylot', 'huerta', 'fundidor', 'confesor', 'moris9'];
+  const pre = [...mobs.map((type, i) => [type, ((i % 8) - 3.5) * 1.32, player.pos.y + 0.32, -4.2, -0.07]),
+               ...jefes.map((type, i) => [type, (i - 2) * 2.65, player.pos.y + 0.30, -6.6, 0])].map(([type, x, y, z, rx]) => {
     const A = enemySprite(type);
     const tex = A.tex.clone();
     tex.repeat.set(0.5, 1);
+    const T = ENEMY_TYPES[type];
     const m = new THREE.Mesh(A.geo, new THREE.MeshBasicMaterial({
-      map: tex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
-    m.position.set((i - 1) * 2.6, player.pos.y + 0.15, -4.2);
+      map: tex, transparent: true, alphaTest: T.alpha ? 0.04 : 0.5, side: THREE.DoubleSide,
+      depthWrite: T.alpha ? false : true, opacity: T.alpha || 1 })); // fantasmas como en juego
+    m.position.set(x, y, z);
+    m.rotation.x = rx; // leve tilt: la fila de mobs no se come la de jefes
     scene.add(m);
     return m;
   });

@@ -104,6 +104,12 @@
   #dmg { position:fixed; inset:0; pointer-events:none; z-index:25; opacity:0;
     background:radial-gradient(ellipse at center, transparent 42%, rgba(255,20,40,.6) 100%); }
 
+  /* E6 — pantallazo glitch de MORIS-9 fase 3: cian duro sobre todo (el pixelado retro
+     de E1 + el bloom ya hacen de la mitad del efecto, spec 3). game.js lo prende 0.1 s. */
+  #gflash { position:fixed; inset:0; pointer-events:none; z-index:26; opacity:0;
+    mix-blend-mode:screen; transition:opacity .04s linear;
+    background:linear-gradient(180deg, rgba(84,240,255,.28), rgba(40,180,220,.5) 50%, rgba(84,240,255,.28)); }
+
   /* ---------- E5: overlay terminal MORIS-9 entre niveles (contenido pleno = E7).
      Fondo negro, verde fósforo monospace, borde cian, cursor parpadeante. El advance
      es click/tap (onTapStart) o A de mando — el overlay captura el puntero a propósito. ---------- */
@@ -208,6 +214,21 @@
   #killfeed div { color:#8dfaff; opacity:.9; }
   #killfeed div.dying { transition:opacity 1s; opacity:0; }
 
+  /* E6: barra de JEFE — arriba y centrada, solo con un boss vivo (name + hp
+     proporcional). --bc lo pinta game.js con el color del jefe. En touch baja para
+     no pisar la topbar achicada. */
+  #bossbar { position:absolute; top:64px; left:50%; transform:translateX(-50%);
+    width:min(540px,74vw); text-align:center; opacity:0; transition:opacity .35s; }
+  #bossbar.show { opacity:1; }
+  #bossname { font-size:15px; letter-spacing:.34em; color:#ffd9d0; margin-bottom:5px;
+    text-shadow:0 0 14px var(--bc,#ff4d5e), 0 1px 0 #000; }
+  #bossbg { height:12px; background:rgba(8,6,14,.72);
+    border:1px solid color-mix(in srgb, var(--bc,#ff4d5e) 62%, transparent);
+    box-shadow:0 0 16px color-mix(in srgb, var(--bc,#ff4d5e) 34%, transparent), inset 0 0 8px #000; }
+  #bossfill { height:100%; width:100%;
+    background:linear-gradient(90deg,#6b1020,#ff4d5e); transition:width .18s linear; }
+  body.touch #bossbar { top:100px; }
+
   /* FPS discreto (fuera del HUD: siempre visible, sin interferir) */
   #fps { position:fixed; top:18px; left:26px; z-index:26; pointer-events:none;
     font-size:12px; letter-spacing:.2em; color:#7fa8c9; opacity:.65;
@@ -303,6 +324,8 @@
   </div>
   <div id="wavemsg"></div>
   <div id="killfeed"></div>
+  <!-- E6: barra del mini-jefe (arriba/centro, visible solo con jefe vivo) -->
+  <div id="bossbar"><div id="bossname">MINI-JEFE</div><div id="bossbg"><div id="bossfill"></div></div></div>
   <div id="popups"></div>
   <div id="hpwrap">
     <div class="barlabel">VITALIDAD</div>
@@ -321,6 +344,7 @@
   </div>
 </div>
 <div id="dmg"></div>
+<div id="gflash"></div>
 <div id="fps">-- FPS</div>
 <div id="gpadchip">🎮 SIN MANDO</div>
 
