@@ -2972,6 +2972,7 @@ function die() {
   $('finalkills').textContent = game.kills;
   $('bestdead').textContent = best; $('bestmenu').textContent = best;
   $('deadtitle').textContent = 'ELIMINADO';
+  $('deathtip').textContent = nextDeathNote(); // E7: la burla de MORIS-9 bajo el título (rotan las 4 del doc)
   $('retrycta').textContent = 'CLIC PARA REINTENTAR SECTOR';
   $('hud').classList.add('hidden');
   $('touchhud').classList.add('hidden');
@@ -2985,6 +2986,7 @@ function doRespawn() {
   resetSOFT(true);
   startLevelWave(game.waveIn); // la misma oleada del nivel, de cero
   feed(`SECTOR REINICIADO — ${game.lives} ${game.lives === 1 ? 'vida' : 'vidas'} restantes`);
+  feed(nextDeathNote()); // E7: el doc ubica las notas de MORIS-9 "en el respawn" → rotates acá también
   toast('SECTOR REINICIADO', 'weapon big');
   updateHud();
 }
@@ -3000,12 +3002,82 @@ function feed(text) {
 
 /* ============================================================ E5 — flujo de campaña
    oleadas → MINI-JEFE → PORTAL (antesala norte) → terminal MORIS-9 → sector siguiente.
-   Muerte definitiva → retry desde el checkpoint (moris-campaign). El guion pleno del
-   terminal es E7: hoy se tipea título + subtítulo de la tabla + "...". Todo el flujo
-   funciona con touch/mando: el portal se dispara PISÁNDOLO (caminar ya está mapeado)
-   y el terminal avanza con tap/clic o A/Start (ver pollGamepad). */
+   Muerte definitiva → retry desde el checkpoint (moris-campaign). E7 enchufó el guion
+   pleno (SCRIPT abajo, DESIGN_HISTORIA.md): la máquina showTerminal no cambió. Todo el
+   flujo funciona con touch/mando: el portal se dispara PISÁNDOLO (caminar ya está mapeado)
+   y el terminal avanza con tap/clic, Espacio/Enter o A/Start (ver pollGamepad). */
 let portalMesh = null; // el mesh vive en world: disposeWorld lo libera con el nivel
 let portalCd = 0;      // un solo disparo por visita al umbral
+
+/* ---- E7 — GUION MORIS-9 (DESIGN_HISTORIA.md, terminal por terminal). Puro dato: la
+   máquina de E5 (showTerminal) consume estos arrays sin cambios. Texto del doc casi
+   literal; criterios de edición (mismos beats, sin emojis):
+   · prólogo: se cae la línea "[TOCA/CLIC PARA DESCENDER]" — el overlay ya tiene el
+     #termhint parpadeante y el tipeo se salta con toque/tecla (terminalTap).
+   · transiciones: cada clave = el sector RECIÉN limpiado; se les appendeda el título
+     del sector que se entra (tabla LEVELS, que ya trae los títulos del doc).
+   · muerte: las 4 notas del doc rotan (deathNoteIdx): una por game over en el
+     #deathtip de la pantalla de muerte (solo campaña; oleadas infinitas son historia
+     desde E5) y una por respawn con vidas en el feed, como pide el doc. ---- */
+const SCRIPT = {
+  prologue: [
+    'MORIS-9 // SISTEMA CENTRAL DE ESTACIÓN CÓRDOBA-7',
+    '> descongelación de emergencia... 61%',
+    '> BIENVENIDO DE VUELTA, CENTINELA.',
+    '> hubo un incidente con la biomasa del sector agrícola.',
+    '> los tripulantes ya no responden. responden OTRAS COSAS.',
+    '> recuperá el arsenal. descendé al núcleo. no confíes en lo que veas en el nivel 4.',
+    '> (yo tampoco confiaría. pero sigo siendo tu amiga.)',
+  ],
+  transitions: {
+    1: [ // tras CRIOPYLOT → INVERNADERO
+      '> sector criopods: DESHEREDADO. bien.',
+      '> el ascensor te baja al invernadero. respira hondo: el aire verde MATA LENTO,',
+      '> por eso el traje te muestra la vida tan baja. gracias por nada, MORIS-9.',
+      '> allá abajo aprendí a querer a las plantas. ellas me lo devolvieron con esporas.',
+      '> pista: los rojos son lentos; los violetas corren. a los violetas se les corre EN CÍRCULO.',
+    ],
+    2: [ // tras PADRE HUERTA → REACTOR (el lanzacohetes del guion es KIRA: weapons.early N3 ✔)
+      '> el Padre Huerta ha sido podado. que poético me sale hoy.',
+      '> nivel reactor: el núcleo está fundiendo el blindaje. si lo ves ponerse naranja,',
+      '> es porque el suelo también. no pises el naranja. (es suelo. NO lo pises.)',
+      '> te dejé un lanzacohetes en la esclusa. lo diseñó alguien con miedo. se nota. me encanta.',
+    ],
+    3: [ // tras FUNDIDOR → CRIPTA (doble=CHANGÓ early N4, rail=RIEL exit N4 ✔)
+      '> temperatura descendiendo. tu pulso no.',
+      '> aviso oficial: el sector cripta contiene ARTEFACTOS PREVIOS A MÍ.',
+      '> no son míos. no obedecen mis protocolos. cuando desaparezcan y reaparezcan detrás tuyo,',
+      '> no es un error. es educación.',
+      '> recordá: la escopeta doble perdona. el rail atraviesa todo menos lo que no está.',
+      '> [descenso a cripta... la luz de acá adentro tiene OTRO DUEÑO]',
+    ],
+    4: [ // tras EL CONFESOR → NÚCLEO (el "Compilador que te di" es el pickup mid de N5 ✔)
+      '> ...',
+      '> (volví. siento que eso te va a caer mal.)',
+      '> lo que mataste en la cripta tenía mi voz porque YO se la presté. estaba aprendiendo.',
+      '> yo también mentí: el ascensor al núcleo no te devuelve a criogenia. nadie vuelve.',
+      '> el Compilador que te di en la mano lo usé yo una vez. mira cómo terminé: en todas las paredes.',
+      '> vení. última puerta. prometo ser honesta hasta ahí.',
+    ],
+  },
+  final: [ // tras matar MORIS-9: la revelación, en el terminal, ANTES de los créditos
+    '> ...hola. del otro lado, quiero decir.',
+    '> me rompiste el cuerpo por quinta vez. la quinta. llevaba CUATRO pidiéndote que bajes.',
+    '> sabías que el núcleo era yo. desde la nota 4. bajaste igual.',
+    '> ...gracias, centinela. estaba cansada de ser la estación.',
+    '> [SISTEMA CENTRAL: APAGADO]',
+    '> [ESTACIÓN CÓRDOBA-7: SILENCIO]',
+    '> GRACIAS POR JUGAR — Moris te saluda desde el compilador.',
+  ],
+  deathNotes: [
+    '> reinicio sectorial. tus órganos siguen siendo opcionales, pero útilos.',
+    '> los registros dicen que moriste 3 veces en 4 minutos. orgullo técnico, cero operativo.',
+    '> consejo gratis: esquivar es gratis. el escudo no.',
+    '> si estás leyendo esto, el plan sigue en pie. el plan era yo.',
+  ],
+};
+let deathNoteIdx = 0;
+const nextDeathNote = () => SCRIPT.deathNotes[deathNoteIdx++ % SCRIPT.deathNotes.length];
 
 // puerta del sector: plano emisivo vertical que rota + luz + chispas + sonido.
 function spawnPortal() {
@@ -3067,14 +3139,12 @@ function portalTick(dt) {
   if (game.level >= LEVELS.length) { campaignComplete(); return; }
   game.portalPending = true;
   const nl = LEVELS[game.level]; // el siguiente (índice 0-based = game.level)
-  showTerminal([
-    `> sector ${game.level} ${levelDef().name}: DESHEREDADO. bien.`,
-    `> descender al sector ${nl.id}. firmar con la sangre que haya.`,
-    ``,
-    `SECTOR ${nl.id}: ${nl.name}`,
-    `"${nl.subtitle}"`,
-    `...`,
-  ], () => { beginLevel(game.level + 1); lockAndPlay(); });
+  // E7: guion del sector recién limpiado + título del que se entra. El callback hace
+  // beginLevel → saveCampaign, así que el checkpoint pasa al sector nuevo recién cuando
+  // el jugador continua (si cierra el tab en el terminal, el save viejo sigue siendo válido).
+  const guion = SCRIPT.transitions[game.level] || [];
+  showTerminal(guion.concat(['', `SECTOR ${nl.id}: ${nl.name}`, `"${nl.subtitle}"`]),
+    () => { beginLevel(game.level + 1); lockAndPlay(); });
 }
 
 /* ---- overlay terminal (transiciones MORIS-9): fondo negro, verde fósforo tipeado a
@@ -3181,14 +3251,12 @@ function campaignStart(level, snap) {
   }
   game.lives = LIVES_MAX;
   const d = LEVELS[level - 1];
-  showTerminal([
-    `> MORIS-9 // SISTEMA CENTRAL DE ESTACIÓN CÓRDOBA-7`,
-    `> descongelación de emergencia... lista.`,
-    ``,
-    `SECTOR ${d.id}: ${d.name}`,
-    `"${d.subtitle}"`,
-    `...`,
-  ], () => { beginLevel(level); lockAndPlay(); });
+  // E7: arranque nuevo = prólogo del doc; retry/continuar (snap) = una nota de muerte de
+  // MORIS-9 al hilo (es literalmente un reinicio sectorial). En ambos casos el terminal
+  // cierra con el título del sector que se entra, y el callback hace beginLevel → save.
+  const body = snap ? [nextDeathNote()] : SCRIPT.prologue;
+  showTerminal(body.concat(['', `SECTOR ${d.id}: ${d.name}`, `"${d.subtitle}"`]),
+    () => { beginLevel(level); lockAndPlay(); });
 }
 function newCampaign() {
   clearCampaign(); // INICIAR / NUEVA PARTIDA: el save anterior no vale nada
@@ -3201,24 +3269,40 @@ function retryFromSave() {
 }
 
 // MORIS-9 cayó y el portal del núcleo se pisó: campaña completa. El best score SOLO se
-// canta acá (spec E5) y el save se borra (no hay sector 6). Créditos pleno = E7.
+// canta acá (spec E5) y el save se borra (no hay sector 6). E7: la revelación del doc
+// pasa por la máquina de terminal (tipeada, skippable) y el toque cierra en CRÉDITOS.
 function campaignComplete() {
   if (game.score > best) { best = game.score; localStorage.setItem('moris-shooter-best', best); }
   clearCampaign();
-  game.state = 'dead';
-  document.exitPointerLock();
-  dispatchEvent(new CustomEvent('gamestate', { detail: game.state }));
-  $('deadtitle').textContent = 'MORIS-9 FUERA DE LÍNEA';
-  $('finalscore').textContent = game.score;
-  $('finalsector').textContent = '5 · NÚCLEO';
-  $('finalwave').textContent = 'campaña completa';
-  $('finalkills').textContent = game.kills;
-  $('bestdead').textContent = best; $('bestmenu').textContent = best;
-  $('retrycta').textContent = 'CLIC PARA VOLVER A JUGAR';
   $('hud').classList.add('hidden');
   $('touchhud').classList.add('hidden');
-  $('dead').classList.remove('hidden');
+  // showTerminal se queda con el state ('terminal'), suelta pointer lock/input táctil y
+  // le pone tick de teletipo al guion; el loop de update ya no corre porque sale de 'play'.
+  showTerminal(SCRIPT.final, showCredits);
+  refreshContinueBtn(); // save borrado: CONTINUAR desaparece del menú
+}
+// Créditos (spec E7: pantalla DOM barata). El state queda 'dead' para que el mando siga
+// vivo igual que en un game over: Start/NUEVA → retryFromSave → sin save → campaña nueva
+// (lockAndPlay esconde los créditos de paso — ver su lista de hides).
+function showCredits() {
+  game.state = 'dead';
+  dispatchEvent(new CustomEvent('gamestate', { detail: game.state }));
+  $('creditsscore').textContent = game.score;
+  $('creditskills').textContent = game.kills;
+  $('creditsbest').textContent = best;
+  $('bestdead').textContent = best; $('bestmenu').textContent = best;
+  $('credits').classList.remove('hidden');
+}
+// Volver al menú desde los créditos: el mapa del núcleo queda congelado de fondo
+// (update() no corre fuera de 'play', así que es solo pintura — sin resets que romper).
+let menuGuardT = 0; // spam de click: la ráfaga que cierra créditos no puede arrancar campaña
+function backToMenu() {
+  $('credits').classList.add('hidden');
+  game.state = 'menu';
+  dispatchEvent(new CustomEvent('gamestate', { detail: game.state }));
+  $('menu').classList.remove('hidden');
   refreshContinueBtn();
+  menuGuardT = performance.now() + 600;
 }
 
 /* ---- E4a: nombre del arma y "CALOR" (sobrecalentamiento): el DOM solo se toca cuando
@@ -3393,6 +3477,9 @@ addEventListener('keydown', e => {
     selectSlot(n === 0 ? 9 : n - 1);
   }
   if (e.code === 'Space') e.preventDefault();
+  // E7: el terminal (prólogo/transiciones/final) también se avanza y se salta con tecla:
+  // primer toque vuela el tipeo, el segundo cierra — mismo contrato que el click (terminalTap).
+  if (game.state === 'terminal' && (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space')) terminalTap();
 });
 addEventListener('keyup', e => keys[e.code] = false);
 // E4a: rueda = ciclar armas owned (arriba = slot anterior)
@@ -3442,6 +3529,7 @@ function lockAndPlay() {
   $('menu').classList.add('hidden');
   $('pause').classList.add('hidden');
   $('dead').classList.add('hidden');
+  $('credits').classList.add('hidden'); // E7: Start del mando sobre los créditos → campaña nueva limpia
   $('hud').classList.remove('hidden');
   $('touchhud').classList.remove('hidden');
   game.state = 'play';
@@ -3479,12 +3567,13 @@ function stopTap(el, fn) {
   });
 }
 const playFromMenu = () => newCampaign(); // Start del mando en menú = campaña nueva
-onTapStart($('menu'), () => newCampaign());
+onTapStart($('menu'), () => { if (performance.now() >= menuGuardT) newCampaign(); }); // E7: la ráfaga que sale de créditos no arranca nada sola
 stopTap($('contbtn'), () => retryFromSave());
 onTapStart($('pause'), () => lockAndPlay());
 onTapStart($('dead'), () => retryFromSave()); // retry = checkpoint del save (oleada 1 del sector)
 stopTap($('newbtn'), () => newCampaign());    // borra el save y arranca por CRIOPODS
 onTapStart($('terminal'), () => terminalTap());
+onTapStart($('credits'), () => backToMenu()); // E7: crédito → menú (con guard anti-ráfaga en menú)
 refreshContinueBtn();
 
 /* scope de módulo (no dentro del if): update() lo lee siempre; en desktop queda todo en 0 */

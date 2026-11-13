@@ -128,6 +128,12 @@
     font-size:12px; letter-spacing:.28em; color:#2f9d63; animation:pulse 1.6s ease-in-out infinite; }
   @media (max-height:520px) { #termwrap { font-size:12px; line-height:1.6; min-height:0; padding:14px 18px; } }
 
+  /* ---------- E7: la línea de MORIS-9 bajo "ELIMINADO" (notas de muerte del doc, rotan).
+     Verde fósforo chico, mismo lenguaje visual del terminal, sobre el overlay de muerte. ---------- */
+  #deathtip { margin:-4px 0 4px; max-width:min(680px,88vw); text-align:center;
+    font-size:13px; letter-spacing:.08em; color:#3ddc84;
+    text-shadow:0 0 8px rgba(61,220,132,.45); }
+
   /* ---------- barras de recurso (E3): VITALIDAD arriba, ARMADURA abajo ---------- */
   #hpwrap, #armwrap { position:absolute; left:28px; width:250px; }
   #hpwrap { bottom:64px; }
@@ -387,6 +393,8 @@
 
 <div id="dead" class="overlay hidden">
   <div class="title red" id="deadtitle" style="font-size:52px">ELIMINADO</div>
+  <!-- E7: MORIS-9 comenta tu muerte (las 4 notas del doc rotan — game.js las pone) -->
+  <div id="deathtip"></div>
   <div class="stat-big">SCORE <span id="finalscore">0</span></div>
   <div class="stat-line">Sector: <span id="finalsector">1</span> · Oleada: <span id="finalwave">1</span> · Kills: <span id="finalkills">0</span></div>
   <div class="stat-line best">Mejor score: <span id="bestdead">0</span></div>
@@ -394,10 +402,22 @@
   <div class="cta" id="newbtn" style="border-color:rgba(255,77,94,.6); background:rgba(255,77,94,.08); animation:none; font-size:13px; padding:10px 22px">NUEVA PARTIDA (borra el progreso)</div>
 </div>
 
-<!-- E5: terminal MORIS-9 entre niveles. game.js tipea el guion (showTerminal) y el tap/A avanza. -->
+<!-- E5: terminal MORIS-9 entre niveles. game.js tipea el guion (showTerminal) y el tap/A avanza.
+     E7 enchufa DESIGN_HISTORIA.md: prólogo, transiciones, final (+ Espacio/Enter avanza). -->
 <div id="terminal" class="hidden">
   <div id="termwrap"></div>
   <div id="termhint">TOCA / CLIC / A PARA CONTINUAR</div>
+</div>
+
+<!-- E7: créditos tras el guion FINAL (campaignComplete → terminal → showCredits).
+     Tap/clic devuelve al menú. -->
+<div id="credits" class="overlay hidden">
+  <div class="title" style="font-size:min(8vw,54px)">MORIS <span class="red">//</span> ARENA</div>
+  <div class="subtitle">CAMPAÑA "EL ÚLTIMO SECTOR" — COMPLETA</div>
+  <div class="stat-big">SCORE <span id="creditsscore">0</span></div>
+  <div class="stat-line">Kills: <span id="creditskills">0</span> · Mejor score: <span class="best" id="creditsbest">0</span></div>
+  <div class="controls" style="text-align:center">estación CÓRDOBA-7 — silencio absoluto<br>hecho con three.js en una 3090 · noviembre 2026</div>
+  <div class="cta">CLIC PARA VOLVER AL MENÚ</div>
 </div>
 
 <script type="importmap">
