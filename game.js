@@ -154,6 +154,7 @@ const Sfx = {
   blink()     { this.tone('sine', 900, 180, 0.12, 0.16); this.noise(0.06, 0.14, 2600, 2.5); },        // teletransporte (posesivo/confesor)
   glitchZip() { this.noise(0.05, 0.16, 1700 + Math.random() * 1600, 3); },                            // saltito discreto del glitch
   phaseUp()   { this.tone('sawtooth', 220, 733, 0.35, 0.28); this.noise(0.25, 0.15, 1400, 1); },      // el jefe entra en fase
+  dash()      { this.tone('sawtooth', 210, 48, 0.3, 0.38); this.noise(0.5, 0.3, 600, 1.6); },          // embestida: rugido corto de arranque (fix WIP: se llamaba sin definir)
   portal() { this.tone('triangle', 90, 460, 0.55, 0.3); this.noise(0.5, 0.22, 900, 1.2); },
   // E5 — respawn por vidas: "reinicio sectorial" (barrido corto de subida + clac).
   respawn() { this.tone('square', 140, 620, 0.22, 0.2); this.noise(0.18, 0.2, 1400, 1.5); },
@@ -476,9 +477,9 @@ const PALETTES = {
 };
 
 /* Las 5 de DESIGN_ARSENAL.md/PLAN_ITERACION.md. Campos:
-   · waves + boss.type (elite scale×2.2 hp×6) y weapons {early, exit, mid} = colocación
-     de armas del guion (early: al iniciar · exit: ANTES del portal en la antesala, no te
-     lo podés perder · mid: tras completar las waves, "te lo da MORIS").
+   · waves + weapons {early, exit, mid} = colocación de armas del guion (early: al iniciar ·
+     exit: ANTES del portal en la antesala, no te lo podés perder · mid: tras completar las
+     waves, "te lo da MORIS"). El jefe NO es campo del nivel: lo fija BOSS_TYPE por índice.
    · sky {kind:'stars'|'dome'|'void', stops, stars, code} · fog {color, density}
    · light: [hemi sky, ground, int] [sun col, int] [rim cian, rim magenta, int, int]
    · set: constructor de geometría propia + props (≤40) — ver funciones setXxx abajo.
@@ -1904,14 +1905,18 @@ class Enemy {
   behave(dt, t, dist) {
     const T = this.T;
     switch (T.beh) {
-      case 'spore': { // hongo: cada 4 s suelta un halo verde de 2 m (3 dmg/s por 3 s)
+      case 'spore': { // hongo: cada 4 s suelta un halo verde de 2 m (3 dmg/s por 3 s).
+                      // Spec 4: el hinchado se telegrafía con el flash de startTell (0.3 s);
+                      // la nube nace bajo el sombrero en el momento del POP (camina lento).
         this.sporeT -= dt;
-        if (this.sporeT <= 0) {
+        if (this.sporeT <= 0 && this.tell <= 0) {
           this.sporeT = 4;
-          const p = this.g.position;
-          spawnZone('poison', p.x, p.z, 2, 3, 3);
-          burst(p, 0x6dff8a, 8, 3, 0.7, 1.5);
-          Sfx.sporePop();
+          this.startTell(0.3, () => {
+            const p = this.g.position;
+            spawnZone('poison', p.x, p.z, 2, 3, 3);
+            burst(p, 0x6dff8a, 8, 3, 0.7, 1.5);
+            Sfx.sporePop();
+          });
         }
         break;
       }
@@ -2094,7 +2099,7 @@ class Enemy {
         }
         if (nf >= 3) { // f3: pantallazo glitch cian (el retro de E1 ya hace de la mitad)
           this.p3T = (this.p3T || 2) - dt;
-          if (this.p3T <= 0) { this.p3T = rand(1.4, 2.4); gflash = 0.11; popFxLight(p, 0x54f0ff, 120, 0.12); }
+          if (this.p3T <= 0) { this.p3T = rand(1.4, 2.4); gfxT = 0.11; popFxLight(p, 0x54f0ff, 120, 0.12); } // fix WIP: decía `gflash` (inexistente → ReferenceError en el strict del module)
         }
         break;
       }
@@ -2113,8 +2118,9 @@ class Enemy {
 }
 
 /* ============================================================ E6 — sistema de campo:
-   zonas de piso (esporas/lava), proyectiles ENEMIGOS con pools de 32 por tipo, y los
-   afterimages del glitch. Todo viaja en arrays de módulo (como los cohetes de E4a):
+   zonas de piso (esporas/lava), un pool ENEMIGO compartido de 32 proyectiles (spec
+   E6a), y los afterimages del glitch. Todo viaja en arrays de módulo (como los cohetes
+   de E4a):
    NINGUNO vive en `world`, así que sobreviven el rebuild de buildArena a propósito —
    quien los borra es resetArenaCombat() (beginLevel y respawn pasan por ahí).
    Balances de la spec: halo verde 2 m / 3 dmg/s / 3 s · lava 8 dmg/s / 4 s ·
@@ -2186,35 +2192,35 @@ function zonesUpdate(dt) {
 }
 function clearZones() { for (const z of zones) { z.life = 0; z.mesh.visible = false; z.mat.opacity = 0; } }
 
-/* ---- Proyectiles enemigos: TRES pools de 32 (spec 7: "máx 32 vivos compartidos por
-   tipo, reuse"). bolt = violeta (espectro/Confesor/MORIS) · lava = naranja (lanzas y
+/* ---- Proyectiles enemigos: UN pool COMPARTIDO de 32 (spec E6a: "máx 32 compartidos,
+   reuse sin alloc" — el tope es GLOBAL: con espectros+lanzas+jetes en pista jamás pasan
+   de 32 tiros vivos). bolt = violeta (espectro/Confesor/MORIS) · lava = naranja (lanzas y
    loseta del Fundidor) · spore = verde (esporas del Huerta; explotan en nube de piso).
-   Física prestada del patrón de cohetes/células de E4: punto vs AABB, muros, vida.
-   Solo le hacen daño AL JUGADOR (explode() de E4 no sirve acá: lastimaría a los
-   propios minions). Campos por tiro: dmg/grav/homing/splash/lava. */
+   El slot cambia geo+material al disparar: ambas son compartidas por kind (3 geos + 3
+   mats para los 32 slots) → el reuse no aloja nada. Física prestada del patrón de
+   cohetes/células de E4: punto vs AABB, muros, vida. Solo le hacen daño AL JUGADOR
+   (explode() de E4 no sirve acá: lastimaría a los propios minions).
+   Campos por tiro: dmg/grav/homing/splash/lava. */
 const EPROJ = {
   bolt:  { geo: new THREE.SphereGeometry(0.13, 8, 6), col: 0xaa5cff },
   lava:  { geo: new THREE.BoxGeometry(0.24, 0.24, 0.24), col: 0xff7a2a },
   spore: { geo: new THREE.SphereGeometry(0.17, 8, 6), col: 0x5eff8a },
 };
 const eprojs = [];
-const eProjBy = {}; // kind → slots del pool (cacheado: fireBolt dispara SIN alloc)
-for (const kind in EPROJ) {
-  const S = EPROJ[kind];
-  eProjBy[kind] = [];
-  for (let i = 0; i < 32; i++) {
-    const mat = new THREE.MeshBasicMaterial({ color: neon(S.col, 2.1) });
-    const mesh = new THREE.Mesh(S.geo, mat);
-    mesh.visible = false; mesh.frustumCulled = false;
-    scene.add(mesh);
-    const p = { kind, mesh, vel: new THREE.Vector3(), life: 0, dmg: 1, grav: 0,
-                homing: 0, splash: 0, lava: 0, trail: 0 };
-    eprojs.push(p); eProjBy[kind].push(p);
-  }
+for (const kind in EPROJ) // material por kind, UNA vez (los 32 slots los comparten)
+  EPROJ[kind].mat = new THREE.MeshBasicMaterial({ color: neon(EPROJ[kind].col, 2.1) });
+for (let i = 0; i < 32; i++) {
+  const mesh = new THREE.Mesh(EPROJ.bolt.geo, EPROJ.bolt.mat);
+  mesh.visible = false; mesh.frustumCulled = false;
+  scene.add(mesh);
+  eprojs.push({ kind: 'bolt', mesh, vel: new THREE.Vector3(), life: 0, dmg: 1, grav: 0,
+                homing: 0, splash: 0, lava: 0, trail: 0 });
 }
 function fireBolt(kind, x, y, z, vx, vy, vz, o = {}) {
-  const arr = eProjBy[kind];
-  const q = arr.find(p => p.life <= 0) || arr[0]; // saturado: recicla el más viejo
+  const S = EPROJ[kind];
+  const q = eprojs.find(p => p.life <= 0) || eprojs[0]; // saturado: recicla (tope 32 real)
+  q.kind = kind;
+  q.mesh.geometry = S.geo; q.mesh.material = S.mat; // swap sin alloc: geo/mat compartidas
   q.mesh.position.set(x, y, z);
   q.vel.set(vx, vy, vz);
   q.life = o.life || 3.5;
@@ -2772,7 +2778,7 @@ function onWaveCleared() {
 
 // limpieza de combate común a arranque de sector y respawn (Nada volando entre niveles:
 // cohetes/células/orbes/rayos/casas fuera — hotfix E4a: el reset no puede dejar proyectiles huérfanos.
-// E6: ídem con los pools ENEMIGOS (bolts/esporas/lava/zonas/afterimages): ni proyectiles
+// E6: ídem con el pool ENEMIGO y las zonas/afterimages: ni proyectiles
 // ni charcos de veneno sobreviven el cambio de nivel — validación pedida en el pedido).
 function resetArenaCombat() {
   while (enemies.length) enemies[0].remove();
@@ -3076,7 +3082,6 @@ function campaignStart(level, snap) {
       if (W.magSize > 0) player.mags[id] = W.magSize;
     }
     beginLevel(level);
-    window.__qaStep = `beginLevel(${level}) ok`;
     game.state = 'play';
     dispatchEvent(new CustomEvent('gamestate', { detail: 'play' }));
     return;
@@ -4477,7 +4482,7 @@ function update(dt, rdt) {
   rocketsUpdate(dt); // cohetes de Kira en vuelo (pool 24, sin alloc)
   updateCells(dt);   // E4b: células de Mate (pool 16, daño directo al impacto)
   updateOrbs(dt);    // E4b: orbes del compilador (pool 6; detonan al impactar o a los 3 s)
-  eProjUpdate(dt);   // E6: proyectiles ENEMIGOS (3 pools de 32: bolts/esporas/lava)
+  eProjUpdate(dt);   // E6: proyectiles ENEMIGOS (pool compartido de 32: bolts/esporas/lava)
   zonesUpdate(dt);   // E6: nubes de esporas y charcos de lava del piso (Daño al pisar)
   ghostsUpdate(dt);  // E6: afterimages del glitch (pool 8, vida 0.2 s)
 
@@ -4682,8 +4687,9 @@ window.__dbg = () => ({ state: game.state, wave: game.wave, waveIn: game.waveIn,
   mag: curMag(), weapon: player.weaponId, pickups: pickups.length,
   owned: [...player.owned], cooling: +player.cooling.toFixed(2), // E4a: arsenal
   pk: pickups.map(p => [Math.round(p.mesh.position.x), Math.round(p.mesh.position.z)]), // test E3
-  eProj: eprojs.reduce((n, p) => n + (p.life > 0 ? 1 : 0), 0),   // E6: pools de 32 compartidos
+  eProj: eprojs.reduce((n, p) => n + (p.life > 0 ? 1 : 0), 0),   // E6: pool compartido (tope 32)
   zones: zones.reduce((n, z) => n + (z.life > 0 ? 1 : 0), 0),    // E6: nubes/charcos vivos
+  enemyTypes: [...new Set(enemies.map(e => e.type))],            // E6a: tipos vivos (QA de spawnWeights por sector)
   slowmo: +game.slowmoT.toFixed(2),                              // E6: lento del final
   inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn, retro: retroOn,
   spriteMode: true, // E2: enemigos = sprite billboard (constante: no hay fallback 3D)

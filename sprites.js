@@ -150,6 +150,12 @@ function drawBrute(frame, s) {
   return cv;
 }
 
+/* tabla de dibujo por tipo: el mapa único que consume makeEnemySprite. Fix E6a sobre el
+   WIP: la declaración original se borró y quedó solo el Object.assign de abajo, lo que
+   tiraba ReferenceError al evaluar el módulo (el juego no arrancaba). Los tipos E6 se
+   suman igual: nueva función de dibujo + su fila en el Object.assign(DRAW, …). */
+const DRAW = { droner: drawDroner, sprinter: drawSprinter, brute: drawBrute };
+
 /* ============================================================ E6 — bestiario por nivel
    Cinco tipos nuevos + cinco mini-jefes, todos con el MISMO pipeline del E2: canvas
    lógico low-res, outlined() para la silueta, sombra elíptica en damero (dither opaco,
