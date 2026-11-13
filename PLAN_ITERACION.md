@@ -47,7 +47,7 @@ Cada nivel termina al matar la oleada+mini-boss → puerta se abre → nota de t
 
 ## Estado (ir actualizando)
 - [x] E1 pipeline retro — pixelación nearest a ~360p (divisor entero del canvas, dpr-independiente) + banded fog 8 bandas en entorno. Toggle en **T** (el plan decía R, pero R es RECARGAR y E1 no toca gameplay). Default retro ON; visible en HUD FPS y __dbg.retro.
-- [ ] E2 enemigos sprite
+- [x] E2 enemigos sprite — Group 3D → 1 plano billboard por enemigo (yaw = cámara, estilo Doom; MeshBasic + CanvasTexture Nearest, alphaTest 0.5, texture+geo cacheadas por tipo, cada enemigo clona la texture para offset de frame propio — suben al GPU 1× por tipo). Idle 2 frames ~2.5 Hz, flash = tinte blanco HDR (color 2.2 → decae a 1), pulso emisivo → scale-bob. Sprites retocados: outline 1px, sombra elíptica ditherizada (alphaTest no admite alpha), fix ojo sprinter invisible (#b6ff inválido) y piezas flotantes droner/sprinter. Retro ahora apunta ~270p con divisor entero múltiplo de dpr (floor si no entra). Preview del arte: `?sprite=1`. Hitboxes/IA intactas; `__dbg.spriteMode`.
 - [ ] E3 recursos vida/escudo/munición
 - [ ] E4 arsenal 10 armas
 - [ ] E5 niveles + progresión

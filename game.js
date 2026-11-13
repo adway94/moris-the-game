@@ -4,6 +4,7 @@ import { EffectComposer } from './vendor/examples/jsm/postprocessing/EffectCompo
 import { RenderPass } from './vendor/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from './vendor/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from './vendor/examples/jsm/postprocessing/OutputPass.js';
+import { makeEnemySprite } from './sprites.js'; // E2: arte pixel-art de los enemigos (billboard)
 
 /* ============================================================ utils */
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -191,18 +192,18 @@ scene.add(stars);
    bloom real.
 
    PIPELINE RETRO E1 (toggle T): el composer renderiza la escena a un framebuffer
-   interno de altura fija ~360 px y el último pase lo estira al canvas con filtrado
+   interno de altura fija ~270 px y el último pase lo estira al canvas con filtrado
    NEAREST: poniendo NearestFilter en los RT del composer, el quad de OutputPass es en
    sí el upscale — pixelación Doom/Boltgun sin pases ni shaders extra.
    - Resolución interna = px de dispositivo / divisor ENTERO (retroSize): pixeles siempre
-     cuadrados (sin shimmer al moverse) y ~360p sin importar devicePixelRatio.
+     cuadrados (sin shimmer al moverse) y ~270p sin importar devicePixelRatio.
    - Retro baja además el MSAA (samples 0): bordes duros crunchy, que es el look; el
      modo normal (T off) vuelve a dpr ≤ MAX_DPR + MSAA x4, idéntico a pre-E1.
    - samples es inmutable en un WebGLRenderTarget: el toggle intercambia los targets
      internos con composer.reset() (en r160 clone()/reset() preservan samples y
      filtros de la textura). */
 let retroOn = true;   // default: retro ON (nueva estética); T la alterna
-const RETRO_H = 360;  // altura objetivo del buffer interno, en px de dispositivo
+const RETRO_H = 270;  // altura objetivo del buffer interno (~270p, crunch más agresivo)
 
 // un RT para cada ping-pong del composer: HalfFloat (el HDR debe llegar intacto
 // al bloom). Filtros y MSAA según el modo: retro Nearest/sin MSAA, normal Linear/x4.
@@ -215,14 +216,17 @@ function makeComposerTarget() {
   return rt;
 }
 
-// canvas en px de dispositivo dividido por un factor entero f que deja la altura en
-// ~RETRO_H: 1920×1080 → f=3 → 640×360; 2560×1440 → f=4 → 640×360; 1366×768 → f=2 →
-// 683×384. El divisor entero hace el upscale nearest uniforme en ambos ejes, y como f
-// absorbe el dpr la resolución interna es independiente del devicePixelRatio.
+// canvas en px de dispositivo dividido por un factor ENTERO que deja la altura en
+// ~RETRO_H (270p). Preferencia: f = k·dpr con k entero → cada pixel interno cubre k px
+// CSS exactos en ambos ejes (upscale nearest parejo, sin filas/columnas de grosor
+// irregular). Si el dpr es fraccional y k·dpr no sale entero ("no entra"), se hace
+// floor(devH/RETRO_H): el entero más cercano SIN pasar la altura objetivo.
 function retroSize() {
-  const devW = Math.max(2, Math.round(innerWidth * maxDpr()));
-  const devH = Math.max(2, Math.round(innerHeight * maxDpr()));
-  const f = clamp(Math.round(devH / RETRO_H), 1, 16);
+  const dpr = maxDpr();
+  const devW = Math.max(2, Math.round(innerWidth * dpr));
+  const devH = Math.max(2, Math.round(innerHeight * dpr));
+  let f = Math.round(dpr * clamp(Math.round(devH / (RETRO_H * dpr)), 1, 16));
+  if (!Number.isInteger(f) || f < 1) f = clamp(Math.floor(devH / RETRO_H), 1, 16);
   return [Math.max(2, Math.round(devW / f)), Math.max(2, Math.round(devH / f))];
 }
 
@@ -231,7 +235,7 @@ composer.addPass(new RenderPass(scene, camera));
 // bloom a MEDIA resolución: la pirámide de mip de UnrealBloomPass arranca en 1/2 del
 // buffer efectivo -> cada uno de sus ~11 fullscreen passes cuesta 1/4. Clave para PCs
 // flojos / SwiftShader, donde el composer a resolución completa hundía el FPS.
-// Con retro activo la pirámide arranca de los ~360p: bloom muy barato.
+// Con retro activo la pirámide arranca de los ~270p: bloom muy barato.
 const BLOOM_SCALE = 0.5;
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(innerWidth * BLOOM_SCALE, innerHeight * BLOOM_SCALE), 0.55, 0.6, 0.75);
@@ -747,26 +751,30 @@ const enemies = [];
 const enemyHitboxes = []; // mallas invisibles para raycast
 const medkits = [];
 
-const bodyGeo = new THREE.CapsuleGeometry(0.42, 0.7, 4, 10);
-const headGeo = new THREE.SphereGeometry(0.3, 12, 10);
-const eyeGeo = new THREE.SphereGeometry(0.06, 8, 6);
-const ringGeo = new THREE.TorusGeometry(0.5, 0.045, 8, 24);
+// hitbox caja compartida (raycast): invisibles y DoubleSide para que el disparo las
+// agarre desde cualquier ángulo, igual que antes de los sprites.
 const hitGeo = new THREE.BoxGeometry(1.15, 1.9, 1.15);
-const coreGeo = new THREE.SphereGeometry(0.285, 12, 8);   // núcleo emisivo interno (cuello)
-const antGeo = new THREE.CylinderGeometry(0.012, 0.022, 0.36, 5);
-const tipGeo = new THREE.SphereGeometry(0.05, 6, 5);
+const SPRITE_H = 2.3; // alto del plano en unidades de grupo ≈ altura del viejo modelo
+                      // (cápsula+antena); T.scale lo escala por tipo (spawn grow incluido)
 
-// materiales emisivos compartidos por tipo (los Basic no tienen estado por enemigo:
-// el parpadeo se hace con visible, el pulso con scale → se pueden cachear)
+/* E2 — enemigo SPRITE BILLBOARD (Doom/Boltgun): un plano con el sprite-sheet pixel-art
+   de sprites.js reemplaza al Group 3D (cuerpo/cabeza/ojos/anillo/núcleo/antena).
+   - UN CanvasTexture + UN PlaneGeometry por tipo (cacheados). Cada enemigo clona la
+     texture para tener offset de frame PROPIO: los clones comparten `source`, así que
+     el pixel-data del sprite se sube al GPU una sola vez por tipo (el clone solo añade
+     transformaciones de UV por material).
+   - NearestFilter + sin mipmaps + alphaTest 0.5 → bordes duros del pixel-art sin halo.
+   - El color >1 del flash de daño pasa cru por el shader de MeshBasicMaterial →
+     sprite blanco HDR que el bloom se come (equivalente al emissiveIntensity del 3D). */
 const enemyMatCache = {};
-function enemyMats(type) {
+function enemySprite(type) {
   if (!enemyMatCache[type]) {
-    const C = ENEMY_TYPES[type].color;
-    enemyMatCache[type] = {
-      glow: new THREE.MeshBasicMaterial({ color: neon(C, 1.9) }),  // ojos y anillo
-      core: new THREE.MeshBasicMaterial({ color: neon(C, 2.6) }),  // núcleo interno
-      tip:  new THREE.MeshBasicMaterial({ color: neon(C, 3.2) }),  // punta antena (bloom fuerte)
-    };
+    const art = makeEnemySprite(type);
+    const tex = new THREE.CanvasTexture(art.canvas);
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false; tex.colorSpace = THREE.SRGBColorSpace;
+    const geo = new THREE.PlaneGeometry(SPRITE_H * (art.frameW / art.frameH), SPRITE_H);
+    enemyMatCache[type] = { tex, geo };
   }
   return enemyMatCache[type];
 }
@@ -779,28 +787,18 @@ class Enemy {
     this.speed = T.speed * (1 + 0.03 * (game.wave - 1)) * rand(0.9, 1.1);
     this.hitCd = 0; this.phase = rand(0, 6.28); this.spawnT = 0;
 
-    const bMat = new THREE.MeshStandardMaterial({ color: 0x1a2233, roughness: 0.5, metalness: 0.6,
-      emissive: T.color, emissiveIntensity: 0.12, envMapIntensity: 0.4 });
-    const M = enemyMats(type);
-    this.mats = [bMat];
+    const A = enemySprite(type);
+    this.tex = A.tex.clone();
+    this.tex.repeat.set(0.5, 1); // hoja horizontal de 2 frames
+    this.spr = new THREE.Mesh(A.geo, new THREE.MeshBasicMaterial({
+      map: this.tex, transparent: true, alphaTest: 0.5, depthWrite: true,
+      side: THREE.DoubleSide,
+    }));
+    this.spr.position.y = 0.1; // el plano cubre local -1.05..1.25 ⊃ hitbox (-0.75..1.15)
     this.g = new THREE.Group();
-    const body = new THREE.Mesh(bodyGeo, bMat);
-    const head = new THREE.Mesh(headGeo, bMat.clone()); this.mats.push(head.material);
-    head.position.y = 0.85;
-    const eyeL = new THREE.Mesh(eyeGeo, M.glow); eyeL.position.set(-0.11, 0.9, -0.26);
-    const eyeR = new THREE.Mesh(eyeGeo, M.glow); eyeR.position.set(0.11, 0.9, -0.26);
-    const ring = new THREE.Mesh(ringGeo, M.glow); ring.rotation.x = Math.PI / 2; ring.position.y = -0.35;
-    // núcleo emisivo asomando por la unión cuerpo/cabeza (roce en y≈0.68)
-    this.core = new THREE.Mesh(coreGeo, M.core);
-    this.core.position.y = 0.68;
-    // antena con puntito que parpadea
-    const ant = new THREE.Mesh(antGeo, bMat);
-    ant.position.y = 1.31;
-    this.tip = new THREE.Mesh(tipGeo, M.tip);
-    this.tip.position.y = 1.52;
-    this.g.add(body, head, eyeL, eyeR, ring, this.core, ant, this.tip);
     this.g.scale.setScalar(0.01);
     this.baseY = (0.95 + T.scale * 0.25) * T.scale;
+    this.g.add(this.spr);
 
     this.hitbox = new THREE.Mesh(hitGeo, new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }));
     this.hitbox.userData.enemy = this;
@@ -813,7 +811,9 @@ class Enemy {
     enemyHitboxes.push(this.hitbox);
     burst(pos, T.color, 14, 5, 0.8);
   }
-  flash() { for (const m of this.mats) m.emissiveIntensity = 1.6; }
+  // flash de daño: tinte blanco SUPERRADIANTE (Basic multiplica el map con color >1 →
+  // sprite blanco HDR); decae a 1 en update(). Antes era emissiveIntensity del modelo 3D.
+  flash() { this.spr.material.color.setScalar(2.2); }
   takeDamage(d, point) {
     this.hp -= d;
     this.flash();
@@ -841,13 +841,13 @@ class Enemy {
       this.g.scale.setScalar(T.scale * this.spawnT); }
     else if (this.g.scale.x !== T.scale) this.g.scale.setScalar(T.scale);
 
-    for (const m of this.mats)
-      m.emissiveIntensity = Math.max(0.12, m.emissiveIntensity - dt * 5);
-
-    // núcleo: pulso emisivo sutil (escala, sin alloc)
-    this.core.scale.setScalar(1 + Math.sin(t * 4.2 + this.phase) * 0.07);
-    // antena: puntito que parpadea por toggle de tiempo, desfasado por enemigo
-    this.tip.visible = ((t + this.phase * 2.6) % 0.8) < 0.46;
+    // idle: alterna los 2 frames del sheet a ~2.5 Hz, desfasado por enemigo
+    this.tex.offset.x = ((t * 2.5 + this.phase * 0.4) % 1 < 0.5) ? 0 : 0.5;
+    // scale-bob sutil (reemplaza el pulso emisivo del viejo núcleo)
+    this.spr.scale.setScalar(1 + Math.sin(t * 3 + this.phase) * 0.03);
+    // flash: decaimiento del tinte blanco a 1
+    if (this.spr.material.color.r > 1)
+      this.spr.material.color.setScalar(Math.max(1, this.spr.material.color.r - dt * 5));
 
     const p = this.g.position;
     _eDir.set(player.pos.x - p.x, 0, player.pos.z - p.z);
@@ -872,9 +872,12 @@ class Enemy {
     p.z = clamp(p.z, -ARENA + 1.2, ARENA - 1.2);
     pushOutOfBoxes(p, 0.55 * T.scale);
 
-    // levitación + mirar al jugador
+    // levitación + billboard SOLO yaw alineado a la cámara (estilo Doom): el sprite
+    // siempre da de frente, sin flip → nunca se ve la "espalda" y no deforma con el
+    // pitch (por eso un plano rotado en Y y no un Sprite de three, que hace billboard
+    // total contra el plano de imagen y estira con la mirada arriba/abajo).
     p.y = this.baseY + Math.sin(t * 3 + this.phase) * 0.14;
-    this.g.rotation.y = Math.atan2(player.pos.x - p.x, player.pos.z - p.z) + Math.PI;
+    this.spr.rotation.y = camera.rotation.y;
 
     // daño por contacto
     this.hitCd -= dt;
@@ -1685,6 +1688,7 @@ camera.rotation.order = 'YXZ';
 window.__dbg = () => ({ state: game.state, wave: game.wave, en: enemies.length,
   q: game.spawnQueue.length, hp: Math.round(player.hp), score: game.score,
   inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn, retro: retroOn,
+  spriteMode: true, // E2: enemigos = sprite billboard (constante: no hay fallback 3D)
   touchMode: TOUCH_MODE, firing, gamepad: gp.connected,
   x: Math.round(player.pos.x * 10) / 10, z: Math.round(player.pos.z * 10) / 10,
   yaw: Math.round(player.yaw * 100) / 100, pitch: Math.round(player.pitch * 100) / 100 });
@@ -1709,4 +1713,20 @@ window.__probe = () => {
   });
   function round2(v) { return Math.round(v * 100) / 100; }
 };
+/* Vista de arte (?sprite=1): los 3 billboards estáticos frente a la cámara en el título,
+   para iterar sprites.js sin spawnear enemigos (útil también en E6). Se ocultan al entrar
+   en play; nada más del gameplay los toca. */
+if (new URLSearchParams(location.search).has('sprite') || localStorage.getItem('moris-sprites') === '1') {
+  const pre = ['droner', 'sprinter', 'brute'].map((type, i) => {
+    const A = enemySprite(type);
+    const tex = A.tex.clone();
+    tex.repeat.set(0.5, 1);
+    const m = new THREE.Mesh(A.geo, new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
+    m.position.set((i - 1) * 2.6, player.pos.y + 0.15, -4.2);
+    scene.add(m);
+    return m;
+  });
+  addEventListener('gamestate', e => { if (e.detail === 'play') for (const o of pre) o.visible = false; }, { once: true });
+}
 loop();
