@@ -692,7 +692,7 @@ const WEAPONS = {
             kick: 0.09, recoil: 0.03, sfx: 'railFire',
             silhouette: 'rail',  accent: '#b6ff5e' },
   compilador: { slot: 9, name: 'COMPILADOR', shortName: 'BFG',  cross: 'bfg',     ammo: 'argents', magSize: 0 /* 10 argents por orbe: el pool manda */, dmg: 300, cad: 2.0,
-            type: 'projectile', orb: true, projVel: 12, life: 3 /* orbe: 12 m/s, detona al impactar o a los 3 s */,
+            type: 'projectile', orb: true, ammoCost: 10 /* 10 argents por orbe */, projVel: 12, life: 3 /* orbe: 12 m/s, detona al impactar o a los 3 s */,
             kick: 0.10, recoil: 0.04, sfx: 'bfgFire',
             silhouette: 'orb',   accent: '#6dff5e' },
 };
@@ -2714,12 +2714,12 @@ function fireWeapon() {
   if (W.magSize > 0) {
     if (player.mags[player.weaponId] <= 0) { tryReload(); return; } // seco: recarga o click vacío
     player.mags[player.weaponId]--;
-  } else if (W.ammoCost && player.pools[W.ammo].n < W.ammoCost) {
-    // E4b pool-directo (changó): si el pool no llega al costo del disparo completo, click
-    // vacío + hint ANTES de cualquier FX — acá nada se gasta a medias. (El riel con costo
-    // hace su check propio en railChargeStart, antes de la carga.)
-    tryReload();
-    return;
+  } else if (W.ammoCost) {
+    // E4b pool-directo: weapons sin cargador con costo por disparo. El changó (twin) y el
+    // riel cobran ELLOS (por cañón / al soltar la carga) — acá se cobra pool-directo (BFG).
+    const pool = player.pools[W.ammo];
+    if (pool.n < W.ammoCost) { tryReload(); return; } // click vacío: nada se gasta a medias
+    if (W.type !== 'twin') pool.n -= W.ammoCost;
   }
   player.fireCd = W.cad;
   player.lastShotT = game.time;
