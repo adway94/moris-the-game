@@ -61,20 +61,48 @@
   #dmg { position:fixed; inset:0; pointer-events:none; z-index:25; opacity:0;
     background:radial-gradient(ellipse at center, transparent 42%, rgba(255,20,40,.6) 100%); }
 
-  #hpwrap { position:absolute; left:28px; bottom:26px; width:250px; }
-  #hplabel { font-size:12px; letter-spacing:.25em; color:#7fa8c9; margin-bottom:5px; }
-  #hpbarbg { width:100%; height:12px; border:1px solid rgba(84,240,255,.4);
+  /* ---------- barras de recurso (E3): VITALIDAD arriba, ARMADURA abajo ---------- */
+  #hpwrap, #armwrap { position:absolute; left:28px; width:250px; }
+  #hpwrap { bottom:64px; }
+  #armwrap { bottom:26px; }
+  .barlabel { font-size:12px; letter-spacing:.25em; color:#7fa8c9; margin-bottom:5px; }
+  .barbg { width:100%; height:12px; border:1px solid rgba(84,240,255,.4);
     background:rgba(4,10,20,.7); border-radius:2px; overflow:hidden; }
   #hpbar { height:100%; width:100%; background:linear-gradient(90deg,#0ee6a0,#54f0ff);
     box-shadow:0 0 12px rgba(14,230,160,.6); transition:width .15s; }
   #hpbar.low { background:linear-gradient(90deg,#ff3b4e,#ff8f4d);
     box-shadow:0 0 12px rgba(255,59,78,.7); }
+  #armorbar { height:100%; width:100%; background:linear-gradient(90deg,#2a6fff,#5ab0ff);
+    box-shadow:0 0 12px rgba(77,163,255,.6); transition:width .15s; }
 
   #ammowrap { position:absolute; right:32px; bottom:24px; text-align:right; }
   #ammo { font-size:44px; color:#eaffff; text-shadow:0 0 14px rgba(84,240,255,.5); }
   #ammo .reserve { font-size:18px; color:#7fa8c9; }
   #ammo.reloading { color:#ffd166; animation:pulse .5s linear infinite; }
   #wname { font-size:12px; letter-spacing:.3em; color:#7fa8c9; }
+
+  /* toast de pickup (E3): pool de 3 mensajes apilados arriba del HUD */
+  #toasts { position:absolute; left:50%; bottom:104px; transform:translateX(-50%);
+    display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .toast { font-size:16px; letter-spacing:.22em; padding:5px 16px; white-space:nowrap;
+    border:1px solid currentColor; border-radius:3px; background:rgba(4,10,20,.55);
+    text-shadow:0 0 10px currentColor; animation:toastin .18s ease-out; }
+  .toast.life { color:#0ee6a0; } .toast.armor { color:#5ab0ff; } .toast.ammo { color:#ffd166; }
+  .toast.out { transition:opacity .35s; opacity:0; }
+  @keyframes toastin { from{transform:translateY(8px); opacity:0} to{transform:none; opacity:1} }
+
+  /* hint "SIN MUNICIÓN" (2 s, una vez por oleada) */
+  #ammoHint { position:absolute; left:50%; bottom:158px; transform:translateX(-50%);
+    font-size:15px; letter-spacing:.28em; color:#ff8f4d; white-space:nowrap; opacity:0;
+    text-shadow:0 0 12px rgba(255,143,77,.6); transition:opacity .2s; }
+  #ammoHint.show { opacity:1; animation:pulse .7s ease-in-out infinite; }
+
+  /* popups de kill anclados a la proyección en pantalla del enemigo (E8-polish a) */
+  #popups { position:absolute; inset:0; overflow:hidden; }
+  .killpop { position:absolute; transform:translate(-50%,-50%);
+    font-size:14px; font-weight:bold; letter-spacing:.14em; white-space:nowrap;
+    text-shadow:0 0 8px currentColor, 0 1px 0 #000; animation:killpop 1s ease-out forwards; }
+  @keyframes killpop { 0%{opacity:0; margin-top:6px} 12%{opacity:1} 100%{opacity:0; margin-top:-34px} }
 
   #topbar { position:absolute; top:20px; left:50%; transform:translateX(-50%);
     display:flex; gap:34px; font-size:14px; letter-spacing:.18em; color:#9fc6e8; }
@@ -179,13 +207,20 @@
   </div>
   <div id="wavemsg"></div>
   <div id="killfeed"></div>
+  <div id="popups"></div>
   <div id="hpwrap">
-    <div id="hplabel">VITALIDAD</div>
-    <div id="hpbarbg"><div id="hpbar"></div></div>
+    <div class="barlabel">VITALIDAD</div>
+    <div class="barbg"><div id="hpbar"></div></div>
   </div>
+  <div id="armwrap">
+    <div class="barlabel">ARMADURA</div>
+    <div class="barbg"><div id="armorbar"></div></div>
+  </div>
+  <div id="toasts"></div>
+  <div id="ammoHint">SIN MUNICIÓN — BUSCÁ CAJAS</div>
   <div id="ammowrap">
     <div id="wname">RIFLE XM-9</div>
-    <div id="ammo"><span id="mag">30</span><span class="reserve"> / inf</span></div>
+    <div id="ammo"><span id="mag">30</span><span class="reserve" id="reserve"> / 120 balas</span></div>
   </div>
 </div>
 <div id="dmg"></div>
@@ -208,12 +243,13 @@
   <div class="controls" id="controlsDesktop">
     <b>WASD</b> moverse &nbsp;·&nbsp; <b>MOUSE</b> apuntar &nbsp;·&nbsp; <b>CLIC IZQ</b> disparar<br>
     <b>SHIFT</b> sprint &nbsp;·&nbsp; <b>ESPACIO</b> saltar &nbsp;·&nbsp; <b>R</b> recargar &nbsp;·&nbsp; <b>B</b> bloom &nbsp;·&nbsp; <b>T</b> retro &nbsp;·&nbsp; <b>ESC</b> pausa<br>
-    Sobreviví a las oleadas. Los tanques naranjas sueltan botiquines <b>+</b>.
+    Sobreviví a las oleadas. <b>La munición se acaba</b>: juntá cajas de vida, armadura y balas
+    en la arena — los enemigos sueltan drops.<br>
   </div>
   <div class="controls" id="controlsTouch" style="display:none">
     <b>JOYSTICK</b> (tercio izquierdo) moverse · fondo = <b>SPRINT</b><br>
     <b>ARRASTRÁ</b> en el resto de la pantalla para apuntar<br>
-    <b>FIRE</b> disparar (mantené) · <b>RECARGAR</b> · <b>SALTAR</b> · sobreviví a las oleadas
+    <b>FIRE</b> disparar (mantené) · <b>RECARGAR</b> · <b>SALTAR</b> · sobreviví y juntá cajas
   </div>
   <div class="cta" id="startbtn">CLIC PARA JUGAR</div>
   <div class="stat-line"><span id="rec">Recomendado: PC con mouse.</span> Mejor score: <span class="best" id="bestmenu">0</span></div>

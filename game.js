@@ -1,10 +1,12 @@
 // MORIS // ARENA — wave-based FPS, three.js r160, sin dependencias externas.
+// E3: recursos estilo Doom — vida sin regen, armadura con absorción 60%, pools de
+// munición por tipo con caps, pickups billboard y drops por kill (ver PICKUPS/AMMO).
 import * as THREE from 'three';
 import { EffectComposer } from './vendor/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from './vendor/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from './vendor/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from './vendor/examples/jsm/postprocessing/OutputPass.js';
-import { makeEnemySprite } from './sprites.js'; // E2: arte pixel-art de los enemigos (billboard)
+import { makeEnemySprite, makePickupSprite } from './sprites.js'; // E2: arte enemigo · E3: arte pickups
 
 /* ============================================================ utils */
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -72,7 +74,11 @@ const Sfx = {
   kill()   { this.tone('sawtooth', 520, 90, 0.28, 0.22); this.noise(0.15, 0.2, 800, 0.6); },
   hurt()   { this.tone('sine', 160, 50, 0.3, 0.35); this.noise(0.1, 0.25, 300, 0.7); },
   reload() { this.tone('triangle', 300, 300, 0.03, 0.2); setTimeout(() => this.tone('triangle', 480, 480, 0.03, 0.2), 160); },
-  pickup() { this.tone('sine', 620, 990, 0.14, 0.2); },
+  // E3 — un blip por categoría de pickup (cortos, estilo retro, se distinguen con la música off):
+  pickupLife()  { this.tone('sine', 523, 523, 0.06, 0.22); setTimeout(() => this.tone('sine', 784, 830, 0.1, 0.2), 70); },
+  pickupArmor() { this.noise(0.03, 0.16, 2600, 3); this.tone('square', 196, 196, 0.04, 0.14); setTimeout(() => this.tone('square', 392, 392, 0.07, 0.14), 60); },
+  pickupAmmo()  { this.noise(0.025, 0.18, 1500, 2); setTimeout(() => { this.noise(0.025, 0.15, 2000, 2); this.tone('triangle', 660, 660, 0.05, 0.18); }, 70); },
+  dry()         { this.noise(0.02, 0.14, 2800, 3); this.tone('square', 150, 70, 0.03, 0.1); }, // aguja percutida: pool vacío
   wave()   { [440, 554, 659, 880].forEach((f, i) => setTimeout(() => this.tone('triangle', f, f, 0.16, 0.18), i * 110)); },
   death()  { this.tone('sawtooth', 300, 30, 1.1, 0.3); this.noise(0.8, 0.25, 220, 0.5); },
 };
@@ -275,7 +281,7 @@ applyComposerSize(); // normaliza los tamaños iniciales (arranca en retro)
    sin retro Y sin bloom se va directo por renderer.render (en screen el renderer
    aplica ACES + sRGB, misma terminación que OutputPass). */
 let bloomOn = true;
-function setBloom(on) { bloomOn = on; }
+function setBloom(on) { bloomOn = on; applyGunGlow(); }
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
@@ -559,6 +565,47 @@ scene.traverse(o => {
   (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => bandedFog(m));
 });
 
+/* ============================================================ recursos (E3) — spec DESIGN_ARSENAL.md
+   Arquitectura pensada para que E4 enchufe las 10 armas sin tocar el sistema:
+   - AMMO: tabla de pools por TIPO de munición (cap + etiqueta). Un arma nueva que use
+     un tipo nuevo = una fila acá y nada más.
+   - WEAPONS: datos estáticos por arma; cada arma declara SU pool (`ammo`) y su cargador
+     (`magSize`). Cargar un arma = una fila y player.mags[idi] arranca solo (resetGame).
+     player.weaponId + curWeapon() son el punto único de acceso: E4 solo mueve el id.
+   - PICKUPS: definición por kind de pickup (categoría + cuánto otorga). El arte vive en
+     sprites.js:makePickupSprite — el kind debe existir allí también. */
+const AMMO = {
+  balas:     { cap: 200, label: 'BALAS' },
+  cartuchos: { cap: 60,  label: 'CARTUCHOS' },
+  celulas:   { cap: 150, label: 'CÉLULAS' },
+  cohetes:   { cap: 12,  label: 'COHETES' },
+  argents:   { cap: 20,  label: 'ARGENTS' },
+};
+const WEAPONS = {
+  // rifle actual: mismo daño/cadencia de siempre; la única mudanza es la munición —
+  // la RESERVA INFINITA está FUERA (se acaba: dispara del cargador y recarga del pool).
+  rifle: { name: 'RIFLE XM-9', ammo: 'balas', magSize: 30, dmg: 22 },
+};
+const PICKUPS = {
+  medkit:      { cat: 'hp',    amount: 25 },
+  medbox:      { cat: 'hp',    amount: 50 },
+  medkitSmall: { cat: 'hp',    amount: 10 },
+  armorShard:  { cat: 'armor', amount: 15 },
+  armorHelm:   { cat: 'armor', amount: 35 },
+  ammoBalas:     { cat: 'ammo', ammo: 'balas',     amount: 18 },
+  ammoCartuchos: { cat: 'ammo', ammo: 'cartuchos', amount: 8 },
+  ammoCelulas:   { cat: 'ammo', ammo: 'celulas',   amount: 15 },
+  ammoCohetes:   { cat: 'ammo', ammo: 'cohetes',   amount: 2 },
+  ammoArgents:   { cat: 'ammo', ammo: 'argents',   amount: 2 },
+  ammoGrande:    { cat: 'ammo', ammo: 'balas',     amount: 40 }, // drop garantizado de BRUTE
+};
+// estado inicial de recursos por partida/retry (hp100/armor0/120 balas vive acá)
+const startResources = () => ({
+  hp: 100, armor: 0,
+  mags: { rifle: 30 },
+  pools: { balas: 120, cartuchos: 0, celulas: 0, cohetes: 0, argents: 0 },
+});
+
 /* ============================================================ player */
 const EYE = 1.7;
 const player = {
@@ -566,14 +613,18 @@ const player = {
   vel: new THREE.Vector3(),
   yaw: 0, pitch: 0,
   onGround: true,
-  hp: 100, maxHp: 100,
+  ...startResources(),      // hp / armor / mags / pools (resetGame los restaura igual)
+  maxHp: 100, maxArmor: 100,
+  weaponId: 'rifle',        // único arma hasta E4; el cambio mueve solo este id
   lastHitT: -99,
   sprintCd: 0, sprintT: 0,
   recoilPitch: 0, roll: 0,
   fireCd: 0, heat: 0,
-  mag: 30, magSize: 30, reloading: 0,
+  reloading: 0, dryT: 0,    // reloading: temporizador de recarga · dryT: anti-spam click vacío
   jumpQueued: false,             // tap JUMP táctil (el espacio de desktop sigue usando keys)
 };
+const curWeapon = () => WEAPONS[player.weaponId];
+const curMag = () => player.mags[player.weaponId];
 const GRAVITY = 24, SPEED = 6.4, SPRINT = 1.55, JUMP_V = 8;
 // cámara suavizada: en desktop copia yaw/pitch 1:1; en táctil los sigue con un low-pass
 // para que el arrastre del dedo no se sienta a saltos (ver update)
@@ -597,6 +648,17 @@ camera.add(gun);
 scene.add(camera);
 
 const MUZZLE = new THREE.Vector3(0, 0, -0.62); // local a gun
+
+// E8-polish(b) — con el bloom APAGADO no hay umbral 0.75 que se "coma" el HDR: las
+// piezas emissives del cañón (riel, fogonazo) se tonemapeaban a blanco puro. El fix es
+// simétrico al problema: con bloom off esos colores bajan a ≤1 (mismo matiz, sin glow
+// artificial → sin quema). applyGunGlow corre en setBloom (toggle B y auto-degrade) y
+// al arrancar. El function-hoisting permite llamarla desde setBloom, definida antes.
+const RAIL_BASE = new THREE.Color(0x54f0ff), FLASH_BASE = new THREE.Color(0xffffff);
+function applyGunGlow() {
+  rail.material.color.copy(RAIL_BASE).multiplyScalar(bloomOn ? 1.7 : 0.85);
+  flash.material.color.copy(FLASH_BASE).multiplyScalar(bloomOn ? 2.6 : 1.5);
+}
 function muzzleWorld(out) {
   out.copy(MUZZLE);
   gun.localToWorld(out);
@@ -621,6 +683,7 @@ gun.add(flash); flash.position.copy(MUZZLE);
 const flashLight = new THREE.PointLight(0xffc36b, 0, 18, 2);
 flashLight.position.copy(MUZZLE);
 gun.add(flashLight);
+applyGunGlow(); // estado inicial acorde al bloom (on por default)
 
 /* ============================================================ FX: tracers + partículas + decals + luces de muerte */
 // temporales de módulo: cero allocations por frame en los hot loops
@@ -742,14 +805,15 @@ function popFxLight(pos, color, peak = 150, dur = 0.38) {
 }
 
 /* ============================================================ enemies */
+// drop: E3 — los drops ya no son una chance por tipo (el viejo campo `drop` salió):
+// rollKillDrop() centraliza las chances (35/40/15/10) + guarantee de BRUTE.
 const ENEMY_TYPES = {
-  droner:  { hp: 40,  speed: 3.4, scale: 1.0,  dmg: 12, score: 100, color: 0xff4d5e, drop: 0.10 },
-  sprinter:{ hp: 24,  speed: 6.6, scale: 0.72, dmg: 8,  score: 150, color: 0xb465ff, drop: 0.08 },
-  brute:   { hp: 170, speed: 2.3, scale: 1.75, dmg: 26, score: 400, color: 0xff9a3d, drop: 0.60 },
+  droner:  { hp: 40,  speed: 3.4, scale: 1.0,  dmg: 12, score: 100, color: 0xff4d5e },
+  sprinter:{ hp: 24,  speed: 6.6, scale: 0.72, dmg: 8,  score: 150, color: 0xb465ff },
+  brute:   { hp: 170, speed: 2.3, scale: 1.75, dmg: 26, score: 400, color: 0xff9a3d },
 };
 const enemies = [];
 const enemyHitboxes = []; // mallas invisibles para raycast
-const medkits = [];
 
 // hitbox caja compartida (raycast): invisibles y DoubleSide para que el disparo las
 // agarre desde cualquier ángulo, igual que antes de los sprites.
@@ -786,6 +850,7 @@ class Enemy {
     this.hp = T.hp * (1 + 0.14 * (game.wave - 1));
     this.speed = T.speed * (1 + 0.03 * (game.wave - 1)) * rand(0.9, 1.1);
     this.hitCd = 0; this.phase = rand(0, 6.28); this.spawnT = 0;
+    this.lastScr = null; // E8-polish(a): última posición en pantalla con el enemigo visible
 
     const A = enemySprite(type);
     this.tex = A.tex.clone();
@@ -823,12 +888,18 @@ class Enemy {
   die() {
     Sfx.kill();
     game.score += this.T.score; game.kills++;
-    feed(`+${this.T.score} ${this.type.toUpperCase()}`);
+    // E8-polish(a): el "+100 DRONER" ya NO sube al killfeed arriba a la derecha — es un
+    // popup anclado a la proyección en pantalla del pecho del enemigo (o a su última
+    // posición visible si murió de espaldas). El killfeed queda para oleadas/avisos.
+    killPopup(`+${this.T.score} ${this.type.toUpperCase()}`,
+      this.chest(_popV), this.lastScr, this.T.color);
+    rollKillDrop(this.g.position, this.type); // E3: drops por kill (brute garantiza)
     burst(this.g.position, this.T.color, 22, 9, 1.2, 1.7);
     popFxLight(this.g.position, this.T.color, 150, 0.38); // flash momentáneo desde el pool
-    if (Math.random() < this.T.drop) spawnMedkit(this.g.position);
     this.remove();
   }
+  // punto "pecho" para el popup de score (centro alto del billboard)
+  chest(out) { return out.set(this.g.position.x, this.g.position.y + 0.8, this.g.position.z); }
   remove() {
     scene.remove(this.g);
     const i = enemies.indexOf(this); if (i >= 0) enemies.splice(i, 1);
@@ -879,6 +950,10 @@ class Enemy {
     p.y = this.baseY + Math.sin(t * 3 + this.phase) * 0.14;
     this.spr.rotation.y = camera.rotation.y;
 
+    // E8-polish(a): recordar dónde se ve al enemigo (px CSS) — si muere fuera de la
+    // vista, su popup de score se ancla a esta última posición conocida
+    this.lastScr = screenOf(this.chest(_popV), this.lastScr);
+
     // daño por contacto
     this.hitCd -= dt;
     if (dist < 1.1 * T.scale + 0.6 && this.hitCd <= 0 && this.spawnT >= 1) {
@@ -888,18 +963,210 @@ class Enemy {
   }
 }
 
-function spawnMedkit(pos) {
-  const g = new THREE.Group();
-  const box = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.38, 0.38),
-    new THREE.MeshStandardMaterial({ color: 0x0e6b4a, emissive: 0x0ee6a0, emissiveIntensity: 1.3 }));
-  const cm = new THREE.MeshBasicMaterial({ color: neon(0xd6ffe9, 1.8) }); // cruz HDR
-  const c1 = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.06, 0.4), cm);
-  const c2 = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.24, 0.4), cm);
-  c1.position.z = 0.005; c2.position.z = 0.005;
-  g.add(box, c1, c2);
-  g.position.set(pos.x, 0.4, pos.z);
-  scene.add(g);
-  medkits.push({ g, t: rand(0, 6) });
+/* ============================================================ E3 — pickups, drops y popups
+   Reemplaza al viejo medkit 3D hardcoded (fuera de juego: el sistema nuevo cubre vida,
+   armadura y munición; nada de drops duplicados). Pickups = billboards pixelados chiquitos
+   con el MISMO patrón del E2: atlas propio de sprites.js (4 vistas), CanvasTexture con
+   NearestFilter + sin mipmaps, alphaTest 0.5, textura clonada por ítem (offsets de vista
+   propios, pixel-data compartido 1× por kind en el GPU). */
+const PICKUP_ART = {};
+function pickupArt(kind) {
+  if (!PICKUP_ART[kind]) {
+    const art = makePickupSprite(kind);
+    const tex = new THREE.CanvasTexture(art.canvas);
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false; tex.colorSpace = THREE.SRGBColorSpace;
+    const h = 0.6, w = h * art.cellW / art.cellH; // 0.6 m de alto: "chiquito" vs 2.3 del enemigo
+    PICKUP_ART[kind] = { tex, geo: new THREE.PlaneGeometry(w, h) };
+  }
+  return PICKUP_ART[kind];
+}
+
+const pickups = [];
+const DROP_TTL = 20;   // los drops por kill viven 20 s (parpadean los últimos 5)
+const DROP_MAX = 40;   // exceso de drops en escena → muere el más viejo
+let bruteKills = 0;    // contador de brutos muertos (alterna ammoGrande/armorHelm cada 2)
+
+// ttl = 0 → caja de arena permanente (spawn de oleada); ttl > 0 → drop con expiración
+function spawnPickup(kind, pos, ttl = 0) {
+  const A = pickupArt(kind);
+  const tex = A.tex.clone(); // clon barato: UV offset propio, source compartido
+  tex.repeat.set(0.25, 1);   // recorte de vista del atlas 4×1 (offset.x = view/4 en update)
+  const mesh = new THREE.Mesh(A.geo, new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, alphaTest: 0.5, depthWrite: true, side: THREE.DoubleSide,
+  }));
+  const baseY = A.geo.parameters.height / 2 + 0.02; // apoyado al piso (plano centrado)
+  mesh.position.set(pos.x, baseY, pos.z);
+  scene.add(mesh);
+  pickups.push({
+    kind, mesh, tex, baseY, drop: ttl > 0, ttl, born: game.time,
+    t: rand(0, 6), phase: rand(0, 6.28), view: -1,
+  });
+}
+
+function clearPickups() {
+  for (const p of pickups) { scene.remove(p.mesh); p.tex.dispose(); }
+  pickups.length = 0;
+}
+
+// (a) spawn de oleada: cajas repartidas por la arena (spec E3).
+function spawnWavePickups(n) {
+  const list = ['ammoBalas', 'ammoBalas', 'ammoBalas', 'medkit']; // base toda oleada
+  if (n % 2 === 0) list.push('armorShard');
+  if (n >= 3) list.push('medbox');
+  if (n >= 5) list.push('ammoCohetes');
+  for (const kind of list) spawnPickup(kind, pickupPoint(), 0);
+}
+
+// Punto de arena despejado: lejos del jugador, afuera de AABBs, sin solapar pickups.
+function pickupPoint() {
+  for (let tries = 0; tries < 40; tries++) {
+    const x = rand(-ARENA + 4, ARENA - 4), z = rand(-ARENA + 4, ARENA - 4);
+    if (Math.hypot(x - player.pos.x, z - player.pos.z) < 5) continue;
+    let ok = true;
+    for (const b of boxes)
+      if (x > b.min.x - 1 && x < b.max.x + 1 && z > b.min.z - 1 && z < b.max.z + 1) { ok = false; break; }
+    if (ok) for (const p of pickups)
+      if (Math.hypot(x - p.mesh.position.x, z - p.mesh.position.z) < 1.6) { ok = false; break; }
+    if (ok) return new THREE.Vector3(x, 0, z);
+  }
+  return new THREE.Vector3(rand(-ARENA + 4, ARENA - 4), 0, rand(-ARENA + 4, ARENA - 4));
+}
+
+// (b) drops por kill (spec E3 / DESIGN_ARSENAL): 35% nada · 40% pool al gasto (simple:
+// 70% balas / 20% células / 10% cartuchos — E4 re-pondera por arma realmente usada) ·
+// 15% botiquín chico +10 · 10% shard de armadura. BRUTE garantiza y alterna cada 2.
+function rollKillDrop(pos, type) {
+  let kind;
+  if (type === 'brute') {
+    bruteKills++;
+    kind = (bruteKills + 1) % 4 < 2 ? 'ammoGrande' : 'armorHelm'; // 1-2 ammo · 3-4 armor…
+  } else {
+    const r = Math.random();
+    if (r < 0.35) return;
+    if (r < 0.75) {
+      const a = Math.random();
+      kind = a < 0.7 ? 'ammoBalas' : a < 0.9 ? 'ammoCelulas' : 'ammoCartuchos';
+    } else if (r < 0.90) kind = 'medkitSmall';
+    else kind = 'armorShard';
+  }
+  spawnPickup(kind, pos, DROP_TTL);
+  trimDrops();
+}
+function trimDrops() {
+  let drops = pickups.filter(p => p.drop);
+  while (drops.length > DROP_MAX) {
+    const oldest = drops.reduce((a, b) => (a.born < b.born ? a : b));
+    scene.remove(oldest.mesh); oldest.tex.dispose();
+    pickups.splice(pickups.indexOf(oldest), 1);
+    drops = pickups.filter(p => p.drop);
+  }
+}
+
+/* ---- aplicación del pickup: pools caps por tipo + helpers HUD ---------------- */
+function addAmmo(type, amount) {
+  const pool = player.pools[type], before = pool.n;
+  pool.n = Math.min(AMMO[type].cap, pool.n + amount);
+  return pool.n - before; // lo que REALMENTE entró (el toast no muestra lo que el cap mordió)
+}
+// un pickup full no se levanta (queda en el piso para más tarde — evita gastar cajas)
+function pickupUsable(kind) {
+  const d = PICKUPS[kind];
+  if (d.cat === 'hp') return player.hp < player.maxHp;
+  if (d.cat === 'armor') return player.armor < player.maxArmor;
+  return player.pools[d.ammo].n < AMMO[d.ammo].cap;
+}
+const PICKUP_FX = { hp: 0x0ee6a0, armor: 0x4da3ff, ammo: 0xffd166 }; // color de partícula
+
+function collectPickup(p) {
+  const d = PICKUPS[p.kind];
+  let gained = 0, text = '', cls = '', sfx;
+  if (d.cat === 'hp') {
+    gained = Math.min(d.amount, player.maxHp - player.hp);
+    player.hp += gained;
+    text = `+${gained} VITALIDAD`; cls = 'life'; sfx = 'pickupLife';
+  } else if (d.cat === 'armor') {
+    gained = Math.min(d.amount, player.maxArmor - player.armor);
+    player.armor += gained;
+    text = `+${gained} ARMADURA`; cls = 'armor'; sfx = 'pickupArmor';
+  } else {
+    gained = addAmmo(d.ammo, d.amount);
+    text = `+${gained} ${AMMO[d.ammo].label}`; cls = 'ammo'; sfx = 'pickupAmmo';
+  }
+  if (gained <= 0) return; // paranoia: pickupUsable ya filtra
+  Sfx[sfx]();
+  toast(text, cls);
+  burst(p.mesh.position, PICKUP_FX[d.cat], 10, 5, 0.7);
+  scene.remove(p.mesh); p.tex.dispose();
+  const i = pickups.indexOf(p); if (i >= 0) pickups.splice(i, 1);
+  updateHud();
+}
+
+/* ---- toast de pickup: pool de 3 mensajes, el viejo se va antes de spamear -------- */
+const toastWrap = $('toasts');
+function toast(text, cls) {
+  while (toastWrap.childElementCount >= 3) toastWrap.removeChild(toastWrap.firstChild);
+  const d = document.createElement('div');
+  d.className = 'toast ' + cls;
+  d.textContent = text;
+  toastWrap.appendChild(d);
+  setTimeout(() => d.classList.add('out'), 1250);
+  setTimeout(() => d.remove(), 1650);
+}
+
+/* ---- hint "SIN MUNICIÓN": 2 s, una vez por oleada (flag reset en startWave) ---- */
+let ammoHintTimer = null;
+function showAmmoHint() {
+  if (game.ammoHint) return;
+  game.ammoHint = true;
+  const el = $('ammoHint');
+  el.classList.add('show');
+  clearTimeout(ammoHintTimer);
+  ammoHintTimer = setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+/* ---- E8-polish(a): popup de score anclado a la pantalla -------------------------
+   screenOf proyecta un punto world → px CSS (con margen-clamp para que el texto nunca
+   se salga). Si el punto está detrás de la cámara devuelve la última posición visible
+   (fallback) ya clampeada; sin fallback conocido, centro. Temporales de módulo: se
+   llama por enemigo por frame, cero alloc. */
+const _popV = new THREE.Vector3(), _popV2 = new THREE.Vector3();
+function screenOf(p, fallback) {
+  const out = fallback || { x: 0, y: 0 };
+  const v = _popV2.copy(p).applyMatrix4(camera.matrixWorldInverse);
+  if (v.z < 0) { // frente a la cámara (mira por -Z): → NDC → px
+    v.applyMatrix4(camera.projectionMatrix); // applyMatrix4 divide por w
+    out.x = clamp((v.x * 0.5 + 0.5) * innerWidth, 24, innerWidth - 24);
+    out.y = clamp((-v.y * 0.5 + 0.5) * innerHeight, 34, innerHeight - 130);
+  } else if (!fallback) {
+    out.x = innerWidth / 2; out.y = innerHeight / 2;
+  }
+  return out;
+}
+const cssColor = {};
+const toCss = hex => cssColor[hex] || (cssColor[hex] = '#' + hex.toString(16).padStart(6, '0'));
+const popupsEl = $('popups');
+const popPool = []; // pool de <div> (los kills en oleada tardía llueven: sin churn de DOM)
+let popSeq = 0;
+function killPopup(text, worldPos, prevScr, colorHex) {
+  while (popupsEl.childElementCount > 12) popupsEl.removeChild(popupsEl.firstChild);
+  let el = popPool.find(o => !o._use);
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'killpop';
+    popPool.push(el);
+  }
+  if (el.parentNode !== popupsEl) popupsEl.appendChild(el); // el trim (>12) pudo sacarlo del DOM
+  el._use = true; // ocupado hasta que el timeout del keyframe lo devuelva
+  el.textContent = text;
+  el.style.color = toCss(colorHex);
+  const scr = screenOf(worldPos, prevScr); // proyección actual; si no, la última visible
+  el.style.left = scr.x.toFixed(0) + 'px';
+  el.style.top = scr.y.toFixed(0) + 'px';
+  const seq = ++popSeq;
+  el.dataset.seq = seq; // mata el timeout de una reutilización anterior
+  el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; // reinicia el keyframe
+  setTimeout(() => { if (+el.dataset.seq === seq) el._use = false; }, 1050);
 }
 
 /* ============================================================ colisión jugador/enemigos contra AABBs */
@@ -924,6 +1191,7 @@ const game = {
   wave: 1, score: 0, kills: 0,
   spawnQueue: [], spawnT: 0,
   intermission: 0,
+  ammoHint: false,         // E3: hint "SIN MUNICIÓN" ya mostrado en esta oleada
   time: 0,
 };
 let best = parseInt(localStorage.getItem('moris-shooter-best') || '0', 10);
@@ -958,8 +1226,10 @@ function spawnPoint() {
 function startWave(n) {
   game.wave = n;
   game.intermission = 0;
+  game.ammoHint = false; // el hint de munición vuelve a poder aparecer una vez
   game.spawnQueue = buildWave(n);
   game.spawnT = 0;
+  spawnWavePickups(n); // E3: cajas de recurso repartidas por la arena al arrancar
   $('wave').textContent = n;
   const msg = $('wavemsg');
   msg.textContent = `OLEADA ${n}`;
@@ -969,23 +1239,31 @@ function startWave(n) {
 
 function resetGame() {
   while (enemies.length) enemies[0].remove();
-  for (const m of medkits) scene.remove(m.g);
-  medkits.length = 0;
-  Object.assign(player, {
-    hp: 100, yaw: 0, pitch: 0, mag: 30, reloading: 0,
+  clearPickups();          // E3: nada de cajas de la partida anterior en la arena
+  bruteKills = 0;
+  Object.assign(player, startResources(), { // hp100 / armor0 / cargadores / pools iniciales
+    yaw: 0, pitch: 0,
+    reloading: 0, dryT: 0,
     recoilPitch: 0, heat: 0, fireCd: 0, lastHitT: -99, sprintCd: 0, sprintT: 0,
     jumpQueued: false,
   });
   viewYaw = viewPitch = 0; // sin barrido de cámara al reaparecer
   player.pos.set(0, EYE, 28);
   player.vel.set(0, 0, 0);
-  Object.assign(game, { score: 0, kills: 0, wave: 0, spawnQueue: [], intermission: 1.2, time: 0 });
+  Object.assign(game, { score: 0, kills: 0, wave: 0, spawnQueue: [], intermission: 1.2, time: 0, ammoHint: false });
+  $('ammo').classList.remove('reloading');
   updateHud();
 }
 
+// Punto único de daño al jugador (E3): todo lo que hoy restaba hp pasa por acá.
+// Absorción estilo Doom: la armadura se come el 60% del incoming hasta agotarse y el
+// resto (lo que no pudo absorber + el 40% reglamentario) va a la vida. SIN regen: la
+// única recuperación son los pickups (ver el bloque de pickups en update).
 function damagePlayer(d) {
   if (game.state !== 'play') return;
-  player.hp -= d;
+  const soak = Math.min(player.armor, d * 0.6);
+  player.armor = Math.max(0, player.armor - soak);
+  player.hp -= d - soak;
   player.lastHitT = game.time;
   Sfx.hurt();
   dmgFlash = Math.min(0.85, dmgFlash + 0.45);
@@ -1026,6 +1304,13 @@ function updateHud() {
   const bar = $('hpbar');
   bar.style.width = (pct * 100) + '%';
   bar.classList.toggle('low', pct < 0.35);
+  // barra de ARMADURA azul (E3): mismo estilo que VITALIDAD, especular abajo
+  const apct = clamp(player.armor / player.maxArmor, 0, 1);
+  $('armorbar').style.width = (apct * 100) + '%';
+  // munición "30 / 124 balas": cargador del arma actual / pool del tipo que consume
+  const W = curWeapon();
+  $('mag').textContent = curMag();
+  $('reserve').textContent = ` / ${player.pools[W.ammo].n} ${AMMO[W.ammo].label.toLowerCase()}`;
   $('score').textContent = game.score;
   $('enemies').textContent = enemies.length + game.spawnQueue.length;
 }
@@ -1379,8 +1664,22 @@ raycaster.far = 150;
 const _mv = new THREE.Vector3(), _dir = new THREE.Vector3(), _end = new THREE.Vector3(),
       _origin = new THREE.Vector3();
 
+/* E3 — recarga con pool por tipo: la reserva infinita se acabó. Con el pool del arma
+   actual vacío NO hay recarga: click vacío (anti-spam 0.5 s — disparar sostenido con
+   agotado no ametralla el clac) + hint "SIN MUNICIÓN" una vez por oleada. Con pool a
+   medias la recarga es parcial (lleva lo que hay). */
 function tryReload() {
-  if (game.state !== 'play' || player.reloading > 0 || player.mag >= player.magSize) return;
+  if (game.state !== 'play' || player.reloading > 0) return;
+  const W = curWeapon(), mag = curMag(), pool = player.pools[W.ammo];
+  if (mag >= W.magSize) return;
+  if (pool.n <= 0) {
+    if (game.time >= player.dryT) {
+      player.dryT = game.time + 0.5;
+      Sfx.dry();
+      if (mag <= 0) showAmmoHint();
+    }
+    return;
+  }
   player.reloading = 1.4;
   Sfx.reload();
   $('ammo').classList.add('reloading');
@@ -1388,8 +1687,9 @@ function tryReload() {
 
 function shoot(dt) {
   if (player.reloading > 0) return;
-  if (player.mag <= 0) { tryReload(); return; }
-  player.mag--;
+  const W = curWeapon();
+  if (player.mags[player.weaponId] <= 0) { tryReload(); return; } // seco: recarga o click vacío
+  player.mags[player.weaponId]--;
   player.fireCd = 0.11;
   player.heat = Math.min(1, player.heat + 0.16);
   Sfx.shoot();
@@ -1413,7 +1713,7 @@ function shoot(dt) {
     end = eHit.point;
     const en = eHit.object.userData.enemy;
     if (en && en.spawnT > 0.3) {
-      en.takeDamage(22, eHit.point);
+      en.takeDamage(W.dmg, eHit.point);
       hitmarkT = 0.12;
       Sfx.hitmark();
     }
@@ -1534,17 +1834,14 @@ function update(dt) {
   if (player.reloading > 0) {
     player.reloading -= dt;
     if (player.reloading <= 0) {
-      player.mag = player.magSize;
+      // recarga desde el pool (parcial si el pool no llega al cargador completo)
+      const W = curWeapon(), pool = player.pools[W.ammo];
+      const take = Math.min(W.magSize - curMag(), pool.n);
+      pool.n -= take;
+      player.mags[player.weaponId] += take;
       $('ammo').classList.remove('reloading');
       updateHud();
     }
-  }
-  $('mag').textContent = player.mag;
-
-  /* --- regen */
-  if (game.time - player.lastHitT > 4.5 && player.hp < player.maxHp) {
-    player.hp = Math.min(player.maxHp, player.hp + 8 * dt);
-    updateHud();
   }
 
   /* --- enemigos */
@@ -1569,21 +1866,26 @@ function update(dt) {
     game.intermission = 3.2;
   }
 
-  /* --- medkits */
-  for (let i = medkits.length - 1; i >= 0; i--) {
-    const mk = medkits[i];
-    mk.t += dt;
-    mk.g.rotation.y = mk.t * 1.6;
-    mk.g.position.y = 0.4 + Math.sin(mk.t * 2.4) * 0.08;
-    if (mk.g.position.distanceTo(player.pos) < 1.4) {
-      player.hp = Math.min(player.maxHp, player.hp + 25);
-      Sfx.pickup();
-      feed('+25 BOTIQUÍN');
-      burst(mk.g.position, 0x0ee6a0, 10, 5, 0.7);
-      scene.remove(mk.g);
-      medkits.splice(i, 1);
-      updateHud();
+  /* --- pickups (E3): giro lento + bob + idle 2 vistas; drop parpadea los últimos 5 s;
+         auto-levante a <1.2 m horizontales del jugador (solo si aún sirve: un botiquín
+         con vida llena queda en el piso para más tarde) */
+  for (let i = pickups.length - 1; i >= 0; i--) {
+    const p = pickups[i];
+    p.t += dt;
+    if (p.drop) {
+      p.ttl -= dt;
+      if (p.ttl <= 0) { // expiró: se va sin dejar ruido
+        scene.remove(p.mesh); p.tex.dispose(); pickups.splice(i, 1);
+        continue;
+      }
     }
+    const view = ((p.t * 2) | 0) & 3; // ciclo 2 Hz: idle0 → idle1 → idle1' → idle0'
+    if (view !== p.view) { p.view = view; p.tex.offset.x = view * 0.25; }
+    p.mesh.rotation.y = p.t * 1.15 + p.phase;                     // rotación lenta
+    p.mesh.position.y = p.baseY + Math.sin(p.t * 2.6 + p.phase) * 0.05; // bob vertical
+    p.mesh.visible = p.ttl <= 0 || p.ttl > 5 || ((p.ttl * 5) | 0) % 2 === 0;
+    const dx = p.mesh.position.x - player.pos.x, dz = p.mesh.position.z - player.pos.z;
+    if (dx * dx + dz * dz < 1.44 && pickupUsable(p.kind)) collectPickup(p);
   }
 
   /* --- partículas */
@@ -1687,6 +1989,9 @@ camera.position.copy(player.pos);
 camera.rotation.order = 'YXZ';
 window.__dbg = () => ({ state: game.state, wave: game.wave, en: enemies.length,
   q: game.spawnQueue.length, hp: Math.round(player.hp), score: game.score,
+  armor: Math.round(player.armor), // E3: recursos
+  pools: Object.fromEntries(Object.entries(player.pools).map(([k, v]) => [k, v.n])),
+  mag: curMag(), weapon: player.weaponId, pickups: pickups.length,
   inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn, retro: retroOn,
   spriteMode: true, // E2: enemigos = sprite billboard (constante: no hay fallback 3D)
   touchMode: TOUCH_MODE, firing, gamepad: gp.connected,
@@ -1713,9 +2018,9 @@ window.__probe = () => {
   });
   function round2(v) { return Math.round(v * 100) / 100; }
 };
-/* Vista de arte (?sprite=1): los 3 billboards estáticos frente a la cámara en el título,
-   para iterar sprites.js sin spawnear enemigos (útil también en E6). Se ocultan al entrar
-   en play; nada más del gameplay los toca. */
+/* Vista de arte (?sprite=1): los 3 billboards de enemigo + la fila de 11 pickups (E3)
+   estáticos frente a la cámara en el título, para iterar sprites.js sin spawnear nada
+   (útil también en E6). Se ocultan al entrar en play; nada más del gameplay los toca. */
 if (new URLSearchParams(location.search).has('sprite') || localStorage.getItem('moris-sprites') === '1') {
   const pre = ['droner', 'sprinter', 'brute'].map((type, i) => {
     const A = enemySprite(type);
@@ -1726,6 +2031,17 @@ if (new URLSearchParams(location.search).has('sprite') || localStorage.getItem('
     m.position.set((i - 1) * 2.6, player.pos.y + 0.15, -4.2);
     scene.add(m);
     return m;
+  });
+  // pickups: grilla 6+5, vista 0 del atlas (idle sin girar) para leer el dibujo entero
+  Object.keys(PICKUPS).forEach((kind, i) => {
+    const A = pickupArt(kind);
+    const tex = A.tex.clone();
+    tex.repeat.set(0.25, 1);
+    const m = new THREE.Mesh(A.geo, new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
+    m.position.set(((i % 6) - 2.5) * 0.85, player.pos.y - 0.55 - ((i / 6) | 0) * 0.62, -4.0);
+    scene.add(m);
+    pre.push(m);
   });
   addEventListener('gamestate', e => { if (e.detail === 'play') for (const o of pre) o.visible = false; }, { once: true });
 }
