@@ -3161,6 +3161,8 @@ function campaignStart(level, snap) {
       if (W.magSize > 0) player.mags[id] = W.magSize;
     }
     beginLevel(level);
+    // QA: ?boss=1 spawnea el mini-jefe del sector al toque (para validar patrones).
+    if (new URLSearchParams(location.search).has('boss')) spawnBoss();
     game.state = 'play';
     dispatchEvent(new CustomEvent('gamestate', { detail: 'play' }));
     return;
