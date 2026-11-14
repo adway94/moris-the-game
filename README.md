@@ -63,16 +63,23 @@ El **Riel del Colastiné** se carga manteniendo el clic y dispara al soltar.
 ## Estructura
 
 ```
-game.js        motor: campaña, IA, arsenal, recursos, viewmodel, touch/gamepad (~5.000 líneas)
-sprites.js     pixel-art procedural: enemigos, jefes, pickups, props, viewmodels
-index.html     UI/HUD/overlays (mono + neón, scanlines CSS)
-serve_https.py server HTTPS stdlib para Gamepad API
-vendor/        three.js r160 + postprocessing (MIT)
-DESIGN_*.md    guion de la campaña y balance del arsenal
-PLAN_ITERACION.md  el plan por etapas
+src/main.js      bootstrap: arranque, loop principal, wiring
+src/core/        estado compartido (game/player), input teclado/mouse, update del mundo
+src/weapons/     tabla de 10 armas + disparo/recarga/munición
+src/enemies/     bestiario, 5 jefes, IA, pools de proyectiles enemigos
+src/levels/      5 sectores: geometría, oleadas, campaña, saves, portal
+src/render/      escena, pipeline retro (pixelación/niebla por bandas), viewmodel, FX
+src/ui/          HUD, terminal MORIS-9, overlays, killfeed
+src/input/       táctil (joystick/FIRE) y mando (gamepad API)
+src/art/         pixel-art procedural: enemigos, jefes, pickups, props, viewmodels
+src/audio/       Sfx 100% procedural (WebAudio, sin samples)
+vendor/          three.js r160 + postprocessing (MIT)
+serve_https.py   server HTTPS stdlib para Gamepad API
+DESIGN_*.md      guion de la campaña y balance del arsenal
+PLAN_ITERACION.md el plan por etapas (E1–E11)
 ```
 
-Todo dibujado por código: cero imágenes binarias en runtime, cero CDNs, cero telemetría.
+Todo dibujado por código: cero imágenes binarias en runtime, cero CDNs, cero telemetría. Módulos ES puros — sin bundler ni build step: lo que ves en `src/` es lo que corre el navegador.
 
 ---
 

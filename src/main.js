@@ -10,6 +10,10 @@ import { solids } from './core/world.js';
 import { ENEMY_TYPES, enemies, enemyHitboxes, enemySprite } from './enemies/enemies.js';
 import { eprojs, zones } from './enemies/field.js';
 import { gp, pollGamepad } from './input/gamepad.js';
+// E10-hotfix: estos dos módulos registran listeners globales por side-effect de import;
+// sin estas líneas el teclado/mouse/touch quedaban MUERTOS (regresión del refactor).
+import './input/keyboard.js';
+import './input/touch.js';
 import { buildArena } from './levels/build.js';
 import { campaignComplete } from './levels/campaign.js';
 import { addAmmo, pickupArt, pickups } from './levels/items.js';
