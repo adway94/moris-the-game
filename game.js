@@ -109,7 +109,8 @@ const Sfx = {
                   this.tone('sawtooth', 95, 32, 0.22, 0.5); },                    // boom grave
   shootSmg()    { this.noise(0.05, 0.4, 2400, 1.1); this.tone('square', 240, 90, 0.045, 0.3); }, // staccato
   shootFist()   { this.noise(0.07, 0.3, 700, 0.6); this.tone('triangle', 200, 70, 0.06, 0.25); }, // soplo
-  meleeHit()    { this.noise(0.04, 0.35, 900, 1); this.tone('square', 320, 120, 0.04, 0.2); },    // caricia
+  meleeHit()    { this.noise(0.04, 0.4, 1100, 1.2); this.tone('square', 320, 120, 0.04, 0.2);
+                  this.tone('sine', 150, 52, 0.08, 0.32); }, // caricia + E11: whack CON cuerpo (el golpe grave abajo)
   flame()       { this.noise(0.13, 0.2, 260 + Math.random() * 200, 0.5);
                   this.tone('sine', 60, 40, 0.1, 0.12); },                          // ruido marrón filtrado (tic a tic)
   rocketFire()  { this.noise(0.3, 0.4, 900, 0.6); this.tone('sine', 700, 140, 0.28, 0.35); },     // whoosh
@@ -130,8 +131,18 @@ const Sfx = {
                   this.tone('sine', 44, 14, 0.95, 0.5); },                          // detonación grave
   weaponGet()   { [523, 659, 784, 1046].forEach((f, i) =>                           // OBTENIDA: fanfarria
                   setTimeout(() => this.tone('triangle', f, f, 0.12, 0.2), i * 70)); },
-  hitmark(){ this.tone('square', 950, 700, 0.05, 0.12); },
-  kill()   { this.tone('sawtooth', 520, 90, 0.28, 0.22); this.noise(0.15, 0.2, 800, 0.6); },
+  // E11 — game feel de impacto (todos <120 ms, sin assets): hitTick es un tick seco con
+  // pitch ±8% random (la cadencia de ametralladora no fatiga el oído); bossThud es el
+  // "tick" del jefe: grave y sutil, el jefe COME los ticks normales. kill = crunch sordo
+  // + blip ascendente (confirmation punch); killBoss = thud grave distinto. El anti-spam
+  // (1 por frame + gap 50 ms) vive en feedbackHit, no acá.
+  hitTick()  { const p = 1 + (Math.random() * 0.16 - 0.08);
+               this.noise(0.03, 0.17, 2600 * p, 2.5); this.tone('square', 1350 * p, 950 * p, 0.03, 0.1); },
+  bossThud() { this.tone('sine', 230, 96, 0.055, 0.12); this.noise(0.05, 0.09, 420, 1.2); },
+  kill()     { this.noise(0.055, 0.42, 340, 0.7); this.tone('sine', 95, 42, 0.09, 0.4);
+               setTimeout(() => this.tone('triangle', 430, 880, 0.08, 0.16), 40); },  // crunch + blip up
+  killBoss() { this.tone('sine', 120, 26, 0.16, 0.5); this.noise(0.1, 0.34, 210, 0.6);
+               setTimeout(() => this.tone('sawtooth', 180, 60, 0.1, 0.18), 60); },    // thud grave + arrastre
   hurt()   { this.tone('sine', 160, 50, 0.3, 0.35); this.noise(0.1, 0.25, 300, 0.7); },
   reload() { this.tone('triangle', 300, 300, 0.03, 0.2); setTimeout(() => this.tone('triangle', 480, 480, 0.03, 0.2), 160); },
   // E4a — troque de arma: clac retro de dos tiempos (cerrojo). deny: slot vacío/no owned.
@@ -1448,6 +1459,33 @@ function burst(pos, color, n, speed = 7, scale = 1, hdr = 1) {
   }
 }
 
+/* E11 — SANGRE: pool propio de 40 pixels chicos (5.5 cm) del color del enemigo, ~0.3 s
+   con gravedad. NORMAL blending a propósito: la sangre no brilla (additive + bloom la
+   volvía fantasma sobre sprites claros). Cero alloc: los mismos 40 meshes de siempre,
+   invisibles entre impactos — auto-degrade no sufre nada nuevo. */
+const bGeo = new THREE.BoxGeometry(0.055, 0.055, 0.055);
+const blood = [];
+for (let i = 0; i < 40; i++) {
+  const m = new THREE.Mesh(bGeo, new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
+  m.visible = false;
+  scene.add(m);
+  blood.push({ mesh: m, vel: new THREE.Vector3(), life: 0, max: 0.3 });
+}
+// punto del impacto (world) + color del enemigo; n chico en hit, grande en kill
+function bloodSpray(pos, color, n) {
+  let made = 0;
+  for (const p of blood) {
+    if (p.life > 0) continue;
+    p.mesh.position.copy(pos);
+    p.mesh.scale.setScalar(rand(0.7, 1.35));
+    p.mesh.visible = true;
+    p.mesh.material.color.set(color).multiplyScalar(0.85); // un punto más oscuro que el sprite
+    p.vel.set(rand(-1, 1), rand(0.1, 1), rand(-1, 1)).normalize().multiplyScalar(rand(1.2, 3.4));
+    p.life = p.max = rand(0.22, 0.3);
+    if (++made >= n) break;
+  }
+}
+
 /* decals de impacto: pool de 20 sprites con marca radial oscura dibujada en canvas
    (barrillos de quemado arriba → material.rotation los orienta según la normal del hit).
    Fade de 4 s. Reemplaza el más viejo si el pool está lleno. */
@@ -1704,10 +1742,14 @@ class Enemy {
   // E4b — estado scorched (detonación del compilador): tinte oscuro persistente SIN DoT.
   // El riel, a propósito, no deja marca: solo el orbe verde fríe el piso.
   scorch(sec) { this.scorchT = Math.max(this.scorchT, sec); }
-  takeDamage(d, point) {
+  // E11 — `melee` cambia el sonido del tick (whack con cuerpo). Todo el feedback de
+  // impacto (sangre, tick, hitmarker, hitstop) sale de feedbackHit: UN punto único por
+  // el que pasan raycast, melee, asador, riel, células, splash y BFG. El burst genérico
+  // de antes queda reemplazado por la sangre (pool propio, más chico y más corto).
+  takeDamage(d, point, melee = false) {
     this.hp -= d;
     this.flash();
-    burst(point, this.T.color, 4, 4, 0.6, 1.6);
+    feedbackHit(this, point, this.hp <= 0, melee);
     // E6 Confesor: CADA golpe conectado agenda un salto (telegrafía 0.2 s). El debounce
     // 0.25 s evita que los 14 pellets del changó agenden 14 teleports en el mismo frame.
     if (this.hp > 0 && this.T.beh === 'bconf') {
@@ -1720,6 +1762,11 @@ class Enemy {
   // clamps de arena/cajas que update(). El steering enemigo vuelve a acercar al tipo:
   // es el "knockback" Doom, no un stun.
   knockback(dist) {
+    // E11 FIX — beh 'static' (Padre Huerta) es una ANCLA del escenario: el llamado
+    // genérico de melee lo deslizaba con cada tiro y lo hacía "dar vueltas por el
+    // lugar". Nadie más empuja: knockback() se llama solo desde meleeStrike y las
+    // explosiones (explode/bfgBlast) solo dañan, no mueven (verificado por grep).
+    if (this.T.beh === 'static') return;
     const p = this.g.position;
     let dx = p.x - player.pos.x, dz = p.z - player.pos.z;
     const l = Math.hypot(dx, dz) || 1;
@@ -1729,8 +1776,11 @@ class Enemy {
     pushOutOfBoxes(p, 0.55 * this.T.scale);
   }
   die() {
-    Sfx.kill();
-    if (this.boss) Sfx.explosion(); // el jefe se apaga con boom, no con el blip normal
+    // E11: confirmación de kill ÚNICA por frame (los 14 pellets del changó o un splash
+    // no apilan 14 crunch) y diferenciada: crunch+blip ascendente normal, thud grave +
+    // boom para el jefe. _fbKillSnd lo agrupa feedbackHit (ver su definición).
+    if (this.boss) { Sfx.killBoss(); Sfx.explosion(); } // el jefe se apaga con boom, no con el blip normal
+    else if (game.time !== _fbKillSnd) { _fbKillSnd = game.time; Sfx.kill(); }
     // E6b spec 7: el séquito PROPIO (drones/esporeadores/posesivos/glitches) se apaga CON
     // su jefe — sin score ni drop (no fue mérito del jugador) y sin tocar el killfeed.
     // Diferido un frame (pendingPop): die() puede correr desde el update() del propio
@@ -2580,11 +2630,13 @@ function collectPickup(p) {
       toast(`OBTENIDA: ${W.name}`, 'weapon big'); // aviso grande (CSS .toast.big)
       Sfx.weaponGet();
       burst(p.mesh.position, 0x5ee6ff, 18, 6, 0.9, 1.9);
+      hudPunch($('wname'), 1.12); // E11: el nombre del arma también pega su golpe
     } else {
       if (gained <= 0) return; // paranoia: pickupUsable ya filtra (pool full + owned)
       Sfx.pickupAmmo();
       toast(`+${gained} ${AMMO[W.ammo].label}`, 'ammo');
       burst(p.mesh.position, PICKUP_FX.ammo, 10, 5, 0.7);
+      hudPunch($('ammo')); // E11: parpadeo del contador (degradó a caja de munición)
     }
     scene.remove(p.mesh); p.tex.dispose();
     const wi = pickups.indexOf(p); if (wi >= 0) pickups.splice(wi, 1);
@@ -2612,6 +2664,9 @@ function collectPickup(p) {
   scene.remove(p.mesh); p.tex.dispose();
   const i = pickups.indexOf(p); if (i >= 0) pickups.splice(i, 1);
   updateHud();
+  // E11 — micro-punch de 100 ms en el HUD del recurso que entró: vida/armadura destellan
+  // su barra entera, munición hace parpadear el contador. Puramente cosmético (WAAPI).
+  hudPunch(d.cat === 'hp' ? $('hpwrap') : d.cat === 'armor' ? $('armwrap') : $('ammo'));
 }
 
 /* ---- toast de pickup: pool de 3 mensajes, el viejo se va antes de spamear -------- */
@@ -2928,7 +2983,10 @@ function damagePlayer(d) {
   player.hp -= d - soak;
   player.lastHitT = game.time;
   Sfx.hurt();
-  dmgFlash = Math.min(0.85, dmgFlash + 0.45);
+  // E11: el vignette (#dmg — DOM aparte del #gflash del jefe, no chocan) escala CON el
+  // golpe: un recorte de 8/envenenamiento apenas tiñe el borde, un brute a cara lavada
+  // lo tiñe entero. Fade lineal ~0.25 s (decay 2.6/s en update).
+  dmgFlash = Math.min(0.9, dmgFlash + clamp(d * 0.011, 0.2, 0.5));
   if (player.hp <= 0) {
     player.hp = 0;
     die();
@@ -2936,6 +2994,56 @@ function damagePlayer(d) {
   updateHud();
 }
 let dmgFlash = 0, hitmarkT = 0;
+
+/* ============================================================ E11 — game feel (juice)
+   Feedback sensorio de lo que YA pasa (cero cambios de balance/mecánica). Todo el daño
+   de arma del jugador pasa por Enemy.takeDamage → feedbackHit: UN punto que dispara
+   sangre, tick sonoro, hitmarker y hitstop, con grouping por frame de juego (game.time
+   se suma una vez por update, así los 14 pellets del changó o los ticks del asador
+   cuentan como UN evento: un tick y UN hitmarker, kills no spamean). --- */
+const HITSTOP = 0.04;   // s de dt congelado en KILL (25 ms si se siente brusco)
+let hitstopT = 0;       // lo consume loop(): solo congela el dt de JUEGO (ver loop)
+let _fbFrame = -1;      // game.time del grupo actual (grouping por frame)
+let _fbTick = 0;        // ya sonó el tick de este frame?
+let _fbKill = 0;        // ya hubo kill este frame? (hitstop una sola vez)
+let _fbKillSnd = -9;    // game.time del último kill sound (die() lo consulta)
+let _fbMode = 0;        // severidad del hitmarker del frame: 0 off · 1 hit · 2 kill · 3 kill de jefe
+let _hitTickT = -9;     // cooldown global del tick (50 ms: la ametralladora no atruena)
+const _hmEl = $('hitmark');
+function feedbackHit(en, point, killed, melee) {
+  const t = game.time;
+  if (t !== _fbFrame) { _fbFrame = t; _fbTick = 0; _fbKill = 0; _fbMode = 0; }
+  // sangre en el punto exacto del raycast (splash/células pasan el pecho: alcanza y sobra)
+  bloodSpray(point || en.g.position, en.T.color, killed ? 9 + ((Math.random() * 4) | 0) : 3 + ((Math.random() * 3) | 0));
+  // tick anti-spam: uno por frame Y con gap mínimo; el jefe come el tick (thud grave sutil)
+  if (!_fbTick && t - _hitTickT >= 0.05) {
+    _fbTick = 1; _hitTickT = t;
+    if (melee) Sfx.meleeHit(); else if (en.boss) Sfx.bossThud(); else Sfx.hitTick();
+  }
+  // hitstop: 40 ms congelados, una sola vez por frame, solo en KILL de tiro
+  // (el DoT de burn baja hp directo y no pasa acá: los ticks por fuego no detienen nada)
+  if (killed && !_fbKill) { _fbKill = 1; hitstopT = Math.max(hitstopT, HITSTOP); }
+  // hitmarker DOM: blanco · amarillo GRUESO en kill · rojo en kill de jefe. Solo sube de
+  // severidad dentro del frame (pelotazo que primero roza y después mata no se apaga).
+  const mode = killed ? (en.boss ? 3 : 2) : 1;
+  if (mode > _fbMode) {
+    const pop = hitmarkT <= 0 || mode >= 2; // pop de escala al encender / al confirmar kill
+    _fbMode = mode;
+    _hmEl.classList.toggle('kill', mode >= 2);
+    _hmEl.classList.toggle('boss', mode === 3);
+    if (pop && _hmEl.animate) // WAAPI: sin clases que queden colgadas; no-op en browsers sin animate
+      _hmEl.animate([{ transform: 'scale(1.7)' }, { transform: 'scale(1)' }], { duration: 110, easing: 'ease-out' });
+  }
+  hitmarkT = Math.max(hitmarkT, mode >= 2 ? 0.14 : 0.11); // 110/140 ms (spec: 100-140)
+}
+// E11 — micro-punch de 100 ms en el HUD del recurso que acaba de entrar (pickup).
+// WAAPI otra vez: nada que "quedar colgado" si llegan dos pickups pegados.
+function hudPunch(el, s = 1.08) {
+  if (el && el.animate) el.animate(
+    [{ transform: `scale(${s})`, filter: 'brightness(2.6)' },
+     { transform: 'scale(1)', filter: 'brightness(1)' }],
+    { duration: 100, easing: 'ease-out' });
+}
 
 function die() {
   /* E5 — VIDAS: con vidas, "SECTOR REINICIADO": respawn en el spawn point del nivel con
@@ -3968,9 +4076,7 @@ function rayShot(ox, oy, oz, dx, dy, dz, dmg, fx) {
   if (eHit && (!wHit || eHit.distance < wHit.distance)) {
     const en = eHit.object.userData.enemy;
     if (en && en.spawnT > 0.3) {
-      en.takeDamage(dmg, eHit.point);
-      hitmarkT = 0.12;
-      Sfx.hitmark();
+      en.takeDamage(dmg, eHit.point); // E11: sangre/tick/hitmarker/hitstop salen de feedbackHit
       if (fx) shootTracer(muzzleWorld(_mv), eHit.point);
       return 2;
     }
@@ -4000,10 +4106,8 @@ function meleeStrike(W) {
   if (eHit && (!wHit || eHit.distance < wHit.distance)) {
     const en = eHit.object.userData.enemy;
     if (en && en.spawnT > 0.3) {
-      en.takeDamage(W.dmg, eHit.point);
-      en.knockback(W.knock);
-      hitmarkT = 0.12;
-      Sfx.meleeHit();
+      en.takeDamage(W.dmg, eHit.point, true); // E11: `melee` → whack con cuerpo en vez del tick
+      en.knockback(W.knock); // (los static como Huerta ya se guardan adentro, ver knockback)
     }
   } else if (wHit) {
     _hitN.copy(wHit.normal).applyMatrix3(_nMat).normalize();
@@ -4022,7 +4126,8 @@ const _flP = new THREE.Vector3(), _flD = new THREE.Vector3();
 function flamerTick(W) {
   camera.getWorldPosition(_origin);
   camera.getWorldDirection(_fwd); // eje del cono = hacia donde se MIRA (camera final)
-  let any = false;
+  // E11: el hitmarker/tick del chorro ahora sale de feedbackHit (takeDamage) — el `any`
+  // de antes solo existía para encenderlos acá.
   for (let i = enemies.length - 1; i >= 0; i--) { // inverso: el tick puede matar (splice)
     const en = enemies[i];
     if (en.spawnT < 0.3) continue;
@@ -4037,12 +4142,10 @@ function flamerTick(W) {
     if (hw && hw.distance < dist - 0.15) continue;  // hay pared en el medio
     en.takeDamage(W.dmg, _flP);
     en.burn(W.burnT, W.burnDps);
-    any = true;
   }
   Sfx.flame();
   player.vmKick = Math.max(player.vmKick, 0.5);
   flashLight.intensity = Math.max(flashLight.intensity, bloomOn ? 18 : 10);
-  if (any) hitmarkT = Math.max(hitmarkT, 0.08);
 }
 
 /* --- changó (E4b, type 'twin'): UNO de los dos cañones — 14 pellets que cobran 1 cartucho
@@ -4061,6 +4164,9 @@ function fireTwinBarrel(W, first) {
     return;
   }
   player.pools[W.ammo].n -= need;
+  // E11: cada cañón del Changó Delgado sacude la cámara cortito (shake del Compilador
+  // con amplitud ~40 %; el cañón 2, que es el eco, un poco menos).
+  player.shakeT = Math.max(player.shakeT, first ? 0.13 : 0.1);
   if (!first) { // eco del cañón 2: fogonazo más chico y media patada
     Sfx[W.sfx]();
     placeVmFlash(0.7); flashT = 0.04;
@@ -4151,17 +4257,14 @@ function railPierce(W) {
   const hitOnce = []; // un raycast toca la caja del enemigo dos veces (entrada/salida):
                       // dedup por enemigo — 160 UNA vez por cuerpo. Alloc por disparo
                       // (cad 1.4 s): el camino caliente sigue sin alloc.
-  let any = false;
   for (const h of hitsEnemy) {
     if (h.distance > wallD) break; // la lista viene ordenada: lo que sigue está tras el muro
     const en = h.object.userData.enemy;
     if (!en || en.spawnT <= 0.3 || hitOnce.includes(en)) continue;
     hitOnce.push(en);
     burst(h.point, 0x66f6ff, 4, 4, 0.6, 2); // marca cian ANTES del daño (die() puede splicear)
-    en.takeDamage(W.dmg, h.point);
-    any = true;
+    en.takeDamage(W.dmg, h.point); // E11: hitmarker/tick/sangre por feedbackHit
   }
-  if (any) hitmarkT = 0.12;
   if (wHit) { // el extremo contra la geometría también sangra FX de impacto
     _nMat.getNormalMatrix(camera.matrixWorld);
     wallImpact(wHit.point, _hitN.copy(wHit.normal).applyMatrix3(_nMat).normalize());
@@ -4220,6 +4323,10 @@ function fireRocket() {
   r.life = 4; // seguridad: nada vuela más de 4 s
   r.trailT = 0;
   r.mesh.visible = true;
+  // E11: el retroceso del cohete también sacude la cámara — MISMA función del shake del
+  // Compilador (player.shakeT en update), solo menor: 0.2 s → amplitud inicial 2/3 y
+  // menos duración. Math.max respeta un shake de BFG que ya esté en curso.
+  player.shakeT = Math.max(player.shakeT, 0.2);
 }
 function rocketsUpdate(dt) {
   const W = WEAPONS.kira;
@@ -4319,8 +4426,7 @@ function updateCells(dt) {
       const dx = en.g.position.x - p.x, dy = en.baseY - p.y, dz = en.g.position.z - p.z;
       if (dx * dx + dy * dy + dz * dz < rr * rr) {
         en.chest(_flP);
-        en.takeDamage(W.dmg, _flP); // 30 directo en el impacto — sin splash, sin area
-        hitmarkT = Math.max(hitmarkT, 0.1);
+        en.takeDamage(W.dmg, _flP); // 30 directo en el impacto — sin splash, sin area (E11: hitmarker por feedbackHit)
         burst(p, 0x5ee6ff, 8, 5, 0.6, 2); // pop cian en el pecho
         hit = true;
         break;
@@ -4729,6 +4835,19 @@ function update(dt, rdt) {
     p.mesh.material.opacity = p.life / p.max;
   }
 
+  /* --- E11: sangre (pool de 40) — más rápida y terrenal que las chispas: cae duro y
+         se apaga en ~0.3 s. Con hitstop dt=0 simplemente se congela (correcto: todo el
+         mundo de juego se congela, el FX de pantalla sigue). */
+  for (const p of blood) {
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    if (p.life <= 0) { p.mesh.visible = false; continue; }
+    p.vel.y -= 16 * dt;
+    p.mesh.position.addScaledVector(p.vel, dt);
+    if (p.mesh.position.y < 0.03) { p.mesh.position.y = 0.03; p.vel.multiplyScalar(0.3); }
+    p.mesh.material.opacity = Math.min(1, (p.life / p.max) * 1.7); // fade corto con body
+  }
+
   /* --- tracers */
   for (const tr of tracers) {
     if (tr.life <= 0) continue;
@@ -4737,11 +4856,17 @@ function update(dt, rdt) {
     else tr.line.material.opacity = 0.9 * (tr.life / 0.07);
   }
 
-  /* --- overlays de daño / hitmarker */
-  dmgFlash = Math.max(0, dmgFlash - dt * 1.6);
+  /* --- overlays de daño / hitmarker (E11). EL HITMARKER VIVE EN DOM (index.html
+         #hitmark, dentro de #hud z 20), NO en el framebuffer retro: el mundo renderiza
+         a ~270p y upscale nearest, y una X de 3 px ahí sería una manchita borrosa.
+         Sobre el DOM el marker se SIEMPRE nítido (render nativo del browser), con
+         retro ON u OFF. Acá solo el timer de apagado: el encendido, las clases
+         kill/boss y el pop de escala los hace feedbackHit. */
+  dmgFlash = Math.max(0, dmgFlash - dt * 2.6); // fade ~0.25 s desde el flash de damagePlayer
   $('dmg').style.opacity = dmgFlash;
   hitmarkT = Math.max(0, hitmarkT - dt);
-  $('hitmark').style.opacity = hitmarkT > 0 ? 1 : 0;
+  _hmEl.style.opacity = hitmarkT > 0 ? 1 : 0;
+  if (hitmarkT <= 0) _hmEl.classList.remove('kill', 'boss'); // el próximo hit arranca en blanco
 }
 
 /* ============================================================ loop */
@@ -4803,6 +4928,12 @@ function loop() {
   // el efecto dura 1.5 s de verdad) y recién ahí campaignComplete(). Todo el update se
   // frena parejo porque recibe el dt escalado — los FX del núcleo son los que flotan.
   if (game.slowmoT > 0) { game.slowmoT = Math.max(0, game.slowmoT - rdt); dt *= 0.3; }
+  // E11 — HITSTOP: 40 ms de dt de JUEGO congelado cuando un tiro hace KILL (feedbackHit,
+  // una vez por frame; HITSTOP=0.025 si se siente brusco). Ultrakill-lite: el clock real,
+  // el mando, el puntero y el render siguen corriendo — solo la simulación se detiene un
+  // latido, que es justo lo que "vende" el golpe. Con dt=0 todo el update es no-op por
+  // diseño (no hay divisiones por dt; fireCd/shakeT/bob se congelan: deseado).
+  if (hitstopT > 0) { hitstopT = Math.max(0, hitstopT - rdt); dt = 0; }
   // countdown del crédito en tiempo real; si el jugador muere en el ínterin se congela
   if (game.completeT > 0 && game.state === 'play') {
     game.completeT -= rdt;
@@ -4860,6 +4991,7 @@ window.__dbg = () => ({ state: game.state, wave: game.wave, waveIn: game.waveIn,
   zones: zones.reduce((n, z) => n + (z.life > 0 ? 1 : 0), 0),    // E6: nubes/charcos vivos
   enemyTypes: [...new Set(enemies.map(e => e.type))],            // E6a: tipos vivos (QA de spawnWeights por sector)
   slowmo: +game.slowmoT.toFixed(2),                              // E6: lento del final
+  hitT: +hitmarkT.toFixed(2), stop: +hitstopT.toFixed(2),        // E11: qa hitmarker/hitstop
   inter: +game.intermission.toFixed(2), t: +game.time.toFixed(1), bloom: bloomOn, retro: retroOn,
   spriteMode: true, // E2: enemigos = sprite billboard (constante: no hay fallback 3D)
   touchMode: TOUCH_MODE, firing, gamepad: gp.connected,
