@@ -561,18 +561,6 @@ function forearm(c, s, x, y, w = 16) {
   px(c, x + 2, y + 2, s, '#565e68'); px(c, x + 3, y + 2, s, '#565e68');
 }
 
-// puño enguantado de frente (fists): dorso + 4 dedos arriba + pulgar + antebrazo propio
-function fistFront(c, s, x, y, w, st = HT, h = 7) {
-  box4(c, s, x, y, w, h, st);
-  const fh = Math.max(2, Math.floor((w - 1) / 4)), gap = fh + 1;
-  for (let f = 0; f < 4; f++) {
-    box4(c, s, x + f * gap, y - 5, fh, 6, st);
-    px(c, x + f * gap + (fh >> 1), y - 4, s, '#6b7280');  // stud en la falange
-  }
-  box4(c, s, x + w - 4, y + h - 3, 6, 5, st);             // pulgar
-  px(c, x + 2, y + 2, s, '#7a8492'); px(c, x + 3, y + 2, s, '#7a8492');
-}
-
 // cable/manguera gruesa: polyline con luz arriba
 function cableRun(c, s, pts, col = '#1e222b', lite = '#4a5260') {
   for (let i = 0; i < pts.length - 1; i++) {
@@ -599,58 +587,66 @@ function rivetRow(c, s, x, y, n, dx = 4, dy = 0) { for (let i = 0; i < n; i++) r
 
 const SIL = {
   // puños E9b: DOS PUÑOS GORDOS enguantados en primerísimo plano (guante #6b7280, sombra
-  // #3a4048, highlight #a8b0b8): el DERECHO abajo-cento enorme con los nudillos y studs
+  // #3a4048, highlight #a8b0b8): el DERECHO abajo-centro enorme con los nudillos y studs
   // mirando al jugador (de ahí sale el fogonazo) y el IZQUIERDO arriba-izq más chico en
   // guardia. Antebrazos saliendo del borde inferior, AO pintado bajo cada puño y edge
   // highlight blanco arriba (dirección de arte b+c).
-  fists: { muzzle: [48, 31], draw(c, s, ac) {
+  fists: { muzzle: [46, 35], draw(c, s, ac) {
     diagBeam(c, s, 28, 31, 52, 46, 13, GL);                 // antebrazo del guardia (se pierde detrás del puño grande)
     box4(c, s, 8, 18, 22, 15, GL);                          // puño izquierdo en guardia (chico, arriba-izq)
-    for (let f = 0; f < 4; f++) {
-      const fx = 9 + f * 5;
-      box4(c, s, fx, 11, 4, 8, GL);                         // falanges
-      px(c, fx + 1, 12, s, '#e6ebf2'); px(c, fx + 1, 13, s, '#a8b0b8'); // stud de la falange
+    for (let f = 0; f < 4; f++) {                           // nudilleras redondas de la guardia
+      const kx = 12 + f * 5;
+      ellipseFill(c, kx, 15, 4, 3, s, GL.out); ellipseFill(c, kx, 15, 3, 2, s, GL.dark);
+      ellipseFill(c, kx, 15, 2, 2, s, GL.base);
+      px(c, kx, 15, s, '#e6ebf2'); px(c, kx - 1, 14, s, '#a8b0b8'); // stud + luz
     }
     box4(c, s, 10, 27, 9, 6, GL);                           // pulgar cruzado
     px(c, 12, 28, s, '#a8b0b8'); px(c, 13, 28, s, '#a8b0b8');
     rectPx(c, 9, 33, 20, 1, s, '#242a31');                  // AO pintado bajo el puño
-    px(c, 10, 11, s, '#ffffff'); px(c, 11, 11, s, '#ffffff'); // edge highlight
+    px(c, 10, 13, s, '#ffffff'); px(c, 9, 15, s, '#ffffff'); // edge highlight de la guardia
     px(c, 18, 22, s, ac);                                   // remate accent del dorso
     diagBeam(c, s, 62, 50, 103, 77, 22, GL);                // antebrazo del recto (ENORME, sale del cuadro)
     rectPx(c, 79, 56, 3, 14, s, '#171a20'); rectPx(c, 79, 60, 3, 4, s, ac); // correa del guante
-    box4(c, s, 32, 40, 36, 22, GL);                         // puño derecho: el que llena el lienzo
+    box4(c, s, 30, 40, 40, 23, GL);                         // puño derecho: el que llena el lienzo
     for (let f = 0; f < 4; f++) {
-      const fx = 33 + f * 9;
-      box4(c, s, fx, 29, 8, 12, GL);                        // nudilleras gordas mirando al jugador
-      rectPx(c, fx + 1, 30, 6, 4, s, '#7d8794');            // nudillo redondeado
-      px(c, fx + 2, 30, s, '#e6ebf2'); px(c, fx + 3, 31, s, '#a8b0b8'); // stud de metal
-      px(c, fx + 5, 33, s, '#3a4048');                      // AO del nudillo
+      const kx = 37 + f * 9;                                // nudilleras GORDAS mirando al jugador
+      ellipseFill(c, kx, 36, 6, 5, s, GL.out);
+      ellipseFill(c, kx, 36, 5, 4, s, GL.dark);             // AO pintado en el nudillo
+      ellipseFill(c, kx, 36, 4, 3, s, GL.base);
+      rectPx(c, kx - 2, 34, 5, 1, s, GL.lite);              // luz arriba del nudillo
+      px(c, kx, 36, s, '#e6ebf2'); px(c, kx + 1, 37, s, '#050609'); // stud de metal + sombra
     }
-    box4(c, s, 36, 54, 13, 7, GL);                          // pulgar
+    box4(c, s, 36, 54, 14, 7, GL);                          // pulgar
     px(c, 38, 55, s, '#a8b0b8'); px(c, 39, 55, s, '#a8b0b8');
-    rectPx(c, 33, 62, 35, 1, s, '#242a31'); rectPx(c, 35, 63, 31, 1, s, '#050609'); // AO dos tonos
-    px(c, 34, 29, s, '#ffffff'); px(c, 35, 29, s, '#ffffff'); px(c, 33, 30, s, '#ffffff'); // edge highlight esquina luz
-    px(c, 44, 30, s, '#ffffff');                            // destello sobre los nudillos (boca real)
-    px(c, 59, 30, s, ac);                                   // stud accent en el nudillo externo
+    rectPx(c, 31, 64, 38, 1, s, '#242a31'); rectPx(c, 33, 65, 34, 1, s, '#050609'); // AO dos tonos bajo el puño
+    px(c, 36, 32, s, '#ffffff'); px(c, 34, 34, s, '#ffffff'); // edge highlight nudillo externo (esquina de luz)
+    px(c, 44, 34, s, '#ffffff');                            // destello sobre los nudillos (boca real)
+    px(c, 62, 35, s, ac); px(c, 63, 35, s, ac);             // acento en la nudillera externa
     px(c, 73, 52, s, ac); px(c, 71, 48, s, ac);             // chispas del golpe
   } },
-  // Vecinal 9mm E9: semi-auto moderna en 3/4 — slide gruesa con serrations, boca anular,
-  // guarda+gatillo, mira frontal blanca y la mano gorda agarrando el grip con 4 dedos.
-  pistol: { muzzle: [28, 14], draw(c, s, ac) {
-    diagBeam(c, s, 30, 17, 58, 36, 11, MW);               // slide (cañón corrido)
-    muzzleRing(c, s, 29, 16, 4, MW);                      // boca
-    for (let i = 0; i < 5; i++) rectPx(c, 46 + i * 2, 29 + i, 1, 7, s, '#12151d'); // serrations
-    rectPx(c, 34, 9, 2, 4, s, '#e6ebf2');                 // mira frontal
-    px(c, 57, 27, s, ac); px(c, 58, 28, s, ac);           // punto de mira trasero (accent)
-    box4(c, s, 44, 38, 16, 6, RB);                        // armazón
-    rivet(c, s, 57, 40);
-    triggerGroup(c, s, 40, 44);
-    diagBeam(c, s, 58, 42, 78, 56, 13, RB);               // grip inclinado
-    for (let i = 0; i < 4; i++) rectPx(c, 62 + i * 3, 46 + i * 2, 2, 3, s, MW.dark); // ranurado
-    rectPx(c, 64, 47, 4, 2, s, ac);                       // banda accent del grip
-    gripHand(c, s, 54, 50, 18);                           // mano: 4 dedos + nudilleras
-    forearm(c, s, 76, 56, 20);                            // antebrazo saliendo del cuadro
-    px(c, 36, 16, s, '#ffffff'); px(c, 37, 16, s, '#ffffff'); // reflejo puntual del slide
+  // Vecinal E9b: 9mm COMPACTA — slide CORTA (largo ≈ 2× alto) con 4 serrations y edge
+  // highlight blanco arriba, boca con anillo, mira frontal blanca con punto accent, ranura
+  // del slide en cian (2 focos de accent), grip diagonal con MANO GORDA (3 dedos
+  // envolviendo + pulgar) y antebrazo saliendo del borde. Masa centrada-der, aire
+  // arriba-izq (~55% del lienzo).
+  pistol: { muzzle: [34, 16], draw(c, s, ac) {
+    diagBeam(c, s, 36, 18, 56, 31, 11, MW);                // slide corta (largo ≈ 2× alto)
+    muzzleRing(c, s, 35, 17, 4, MW);                       // boca con anillo
+    px(c, 38, 14, s, '#ffffff'); px(c, 41, 16, s, '#8f9aab'); px(c, 44, 18, s, '#8f9aab'); // edge highlight del lomo
+    for (let i = 0; i < 4; i++) {                          // 4 serrations (impresión, no retrato)
+      rectPx(c, 48 + i * 2, 26 + i, 1, 6, s, '#12151d');
+      px(c, 49 + i * 2, 26 + i, s, '#4a5260');
+    }
+    rectPx(c, 42, 22, 8, 2, s, '#0d0f14'); rectPx(c, 43, 22, 6, 1, s, ac); // ranura del slide (accent)
+    rectPx(c, 37, 9, 2, 4, s, '#e6ebf2'); px(c, 37, 9, s, '#ffffff');      // mira frontal blanca
+    px(c, 55, 27, s, ac); px(c, 56, 28, s, ac);            // punto de mira trasero (accent)
+    box4(c, s, 50, 34, 14, 6, RB);                         // armazón
+    rivet(c, s, 61, 35);
+    triggerGroup(c, s, 46, 39);                            // guardamonte + gatillo
+    diagBeam(c, s, 57, 38, 71, 54, 12, RB);                // grip diagonal
+    for (let i = 0; i < 3; i++) rectPx(c, 61 + i * 3, 44 + i * 3, 2, 3, s, MW.dark); // ranurado
+    wrapHand(c, s, 55, 45, 20, 3, HT, true);               // mano gorda: 3 dedos + pulgar
+    forearm(c, s, 76, 56, 22);                             // antebrazo gordo del cuadro
   } },
   // MORIS-12 E9: break-action gorda y BAJA — caña + tubo con ánima doble (dos bocas),
   // cajón grande con port-ejection abierto mostrando el cartucho rojo, madera veteada,
@@ -662,7 +658,9 @@ const SIL = {
     muzzleRing(c, s, 18, 10, 4, MW);                      // boca de arriba (ánima doble)
     muzzleRing(c, s, 22, 19, 3, MW);                      // boca del tubo
     px(c, 26, 5, s, '#e6ebf2'); px(c, 26, 6, s, '#e6ebf2'); // fibra de mira
+    px(c, 18, 6, s, '#ffffff'); px(c, 26, 5, s, '#ffffff'); // E9b: edge highlights (aro boca + mira)
     box4(c, s, 52, 28, 26, 14, RB);                       // cajón de mecanismos
+    px(c, 53, 28, s, '#ffffff');                           // E9b: edge highlight del cajón (pop)
     rivetRow(c, s, 74, 31, 3, 0, 4);
     box4(c, s, 58, 31, 11, 7, { out: '#0d0f14', lite: '#161a22', base: '#0d1015', dark: '#12151d' }); // port abierto
     rectPx(c, 59, 33, 8, 4, s, '#c0392b');                // cartucho rojo asomando
@@ -679,30 +677,45 @@ const SIL = {
     forearm(c, s, 84, 60, 16);
     px(c, 54, 29, s, ac); px(c, 56, 29, s, ac);           // grabado accent del cajón
   } },
-  // Ametralladora E9: SMG con cargador curvo grueso colgando (la mano izquierda lo
-  // abraza), riel superior con punto accent, cañón con cooling slots y culata plegada.
-  smg: { muzzle: [22, 7], draw(c, s, ac) {
-    diagBeam(c, s, 24, 9, 40, 20, 6, MW);                 // cañón
-    for (let i = 0; i < 3; i++) rectPx(c, 29 + i * 3, 12 + i, 1, 4, s, '#0d0f14'); // cooling slots
-    muzzleRing(c, s, 23, 8, 3, MW);
-    rectPx(c, 27, 3, 2, 3, s, '#e6ebf2');                 // mira frontal
-    diagBeam(c, s, 38, 18, 70, 39, 14, RB);               // cajón
-    diagBeam(c, s, 32, 11, 66, 32, 3, RB);                // riel superior
-    rectPx(c, 50, 20, 3, 2, s, ac);                       // punto de mira del riel
-    box4(c, s, 46, 18, 9, 5, RB); rivet(c, s, 47, 19);    // puerto de eyección
-    diagBeam(c, s, 46, 36, 42, 50, 9, RB);                // cargador curvo tramo 1
-    diagBeam(c, s, 42, 50, 37, 60, 9, RB);                // tramo 2
-    rectPx(c, 34, 60, 9, 3, s, RB.dark);                  // base del cargador
-    px(c, 44, 40, s, ac); px(c, 43, 45, s, ac);           // ranuras que dejan ver las balas
-    diagBeam(c, s, 62, 42, 70, 52, 7, RB);                // grip
-    diagBeam(c, s, 72, 36, 92, 46, 5, RB);                // culata plegada
-    px(c, 72, 36, s, '#59616f'); px(c, 72, 37, s, '#12151d'); // bisagra
-    triggerGroup(c, s, 54, 44);
-    gripHand(c, s, 62, 48, 16);                           // mano derecha en el grip
-    forearm(c, s, 80, 60, 18);
-    gripHand(c, s, 32, 40, 17);                           // mano izquierda abrazando el cargador
-    forearm(c, s, 52, 58, 20);
-    rivetRow(c, s, 56, 28, 3, 4, 2);
+  // Ametralladora E9b: subfusil CORTO de silueta inconfundible — cuerpo cuadrado, CARGADOR
+  // CURVO GRUESO colgando (seña principal, la mano izquierda lo abraza por abajo), cañón
+  // corto con 3 perforaciones, culata tubular plegada atrás, mira frontal blanca + mirilla
+  // plegada y DOS manos gordas (der en el grip, izq bajo el cargador). Accent lima: mirilla
+  // + ranura eyector con destello + bisagra de la culata.
+  smg: { muzzle: [23, 9], draw(c, s, ac) {
+    diagBeam(c, s, 26, 10, 40, 19, 8, MW);                 // cañón corto
+    muzzleRing(c, s, 25, 9, 3, MW);                        // boca
+    rectPx(c, 30, 11, 1, 4, s, '#050609'); px(c, 29, 11, s, '#59616f'); // 3 perforaciones
+    rectPx(c, 33, 13, 1, 4, s, '#050609'); px(c, 32, 13, s, '#59616f');
+    rectPx(c, 36, 15, 1, 4, s, '#050609'); px(c, 35, 15, s, '#59616f');
+    rectPx(c, 29, 4, 2, 4, s, '#e6ebf2'); px(c, 29, 4, s, '#ffffff');   // mira frontal blanca
+    diagBeam(c, s, 38, 18, 70, 38, 16, RB);                // cuerpo cuadrado
+    px(c, 46, 15, s, '#ffffff'); px(c, 47, 15, s, '#ffffff');           // edge highlight del cajón
+    diagBeam(c, s, 42, 14, 66, 29, 3, RB);                 // riel superior
+    px(c, 50, 18, s, '#ffffff'); px(c, 58, 23, s, '#ffffff');           // edge highlight del riel
+    box4(c, s, 45, 11, 9, 4, RB);                          // mirilla plegada sobre el riel
+    px(c, 47, 13, s, ac); px(c, 48, 13, s, ac);            // punto de mira (accent)
+    box4(c, s, 52, 22, 9, 5, RB);                          // puerto de eyección
+    rectPx(c, 53, 23, 7, 3, s, '#0d0f14'); rectPx(c, 54, 24, 5, 1, s, ac); // ranura con glow (accent)
+    px(c, 54, 23, s, '#ffffff');                           // destello del borde
+    rectPx(c, 46, 29, 14, 8, s, RB.out); rectPx(c, 47, 30, 12, 6, s, RB.base); // boca del cargador
+    rectPx(c, 47, 30, 12, 1, s, RB.lite); rectPx(c, 47, 35, 12, 1, s, RB.dark);
+    rectPx(c, 47, 33, 6, 1, s, '#050609'); px(c, 48, 33, s, '#d9a441'); px(c, 50, 33, s, '#d9a441'); // balas asomando
+    diagBeam(c, s, 50, 34, 46, 46, 12, RB);                // cargador curvo GRUESO (3 tramos, seña de la silueta)
+    diagBeam(c, s, 46, 46, 41, 57, 12, RB);
+    diagBeam(c, s, 41, 57, 40, 64, 12, RB);
+    box4(c, s, 35, 64, 10, 4, RB);                         // base del cargador
+    diagBeam(c, s, 62, 40, 69, 53, 8, RB);                 // grip
+    triggerGroup(c, s, 54, 38);                            // guardamonte + gatillo
+    box4(c, s, 70, 33, 6, 8, RB); px(c, 72, 36, s, ac); px(c, 72, 37, s, '#3a4048'); // bisagra accent
+    diagBeam(c, s, 76, 38, 93, 49, 5, MW);                 // culata tubular plegada
+    rectPx(c, 89, 44, 7, 11, s, MW.out); rectPx(c, 90, 45, 5, 9, s, '#14171d'); // cantonera
+    rectPx(c, 90, 45, 1, 9, s, '#4a5260');                 // luz del borde de la cantonera
+    rivet(c, s, 64, 24); rivet(c, s, 68, 26);
+    forearm(c, s, 50, 58, 20);                             // antebrazo izquierdo (el que abraza)
+    wrapHand(c, s, 33, 50, 17, 3, HT);                     // mano izq: 3 dedos abrazando el cargador por abajo
+    forearm(c, s, 78, 58, 22);                             // antebrazo derecho
+    wrapHand(c, s, 61, 47, 18, 3, HT);                     // mano der en el grip
   } },
   // Asador E9: TANQUE a la espalda asomando arriba-der con visor redondo encendido,
   // manguera curva al cañón-crisol, boquilla con 3 púas y llama, mano en el grip y otra
