@@ -470,6 +470,7 @@ const RB = { out: '#0d0f14', lite: '#59616f', base: '#3a3f4c', dark: '#262a34' }
 const HT = { out: '#171a20', lite: '#565e68', base: '#3a4048', dark: '#272b31' };      // guante #3a4048
 const WD = { out: '#2a1a0c', lite: '#9c6a44', base: '#7a4a2b', dark: '#55351d' };      // madera #7a4a2b
 const ARM = { out: '#0d0f14', lite: '#6b7280', base: '#4b525e', dark: '#333945' };     // blindaje (orb)
+const GL = { out: '#171a20', lite: '#a8b0b8', base: '#6b7280', dark: '#3a4048' };      // guante gordo E9b #6b7280
 
 // caja 4 tonos con outline 1px: luz arriba-izq, sombra abajo-der (la base del look E9)
 function box4(c, s, x, y, w, h, P) {
@@ -534,6 +535,26 @@ function gripHand(c, s, x, y, w, st = HT) {
   px(c, x + 1, y + 8, s, '#7a8492'); px(c, x + 2, y + 8, s, '#7a8492'); // reflejo puntual
 }
 
+// E9b: MANO GORDA de proporción heroica (dirección de arte b): nf dedos GRUESOS envolviendo
+// el arma (2px de sombra entre dedo y dedo = separación leída a 1/3), dorso con placa de
+// nudillos #6b7280 + studs, pulgar opcional asomando del lado del gatillo y edge highlight
+// blanco arriba (c). (x,y) = esquina de los dedos (lado cañón), w ancho total (18-22).
+function wrapHand(c, s, x, y, w, nf = 3, st = HT, thumb = false) {
+  const fh = Math.max(3, Math.floor((w - 1) / nf)), gap = fh + 1, fhgt = Math.max(6, Math.round(w / 3));
+  for (let f = 0; f < nf; f++) box4(c, s, x + f * gap, y, fh, fhgt, st);
+  for (let f = 0; f < nf - 1; f++) rectPx(c, x + (f + 1) * gap - 1, y + 1, 1, fhgt - 2, s, st.out); // sombra entre dedos
+  for (let f = 0; f < nf; f++) px(c, x + f * gap + 1, y, s, '#ffffff');                             // edge highlight nudillos
+  const bw = nf * gap + 1, by = y + fhgt - 1;
+  box4(c, s, x, by, bw, Math.max(6, Math.round(w / 2.6)), st);
+  rectPx(c, x + 1, by, bw - 2, 2, s, '#6b7280');                          // placa de nudillos
+  for (let f = 0; f < nf; f++) {
+    px(c, x + f * gap + (fh >> 1), by, s, '#a8b0b8');                     // stud
+    px(c, x + f * gap + (fh >> 1) + 1, by + 1, s, '#3a4048');             // AO del stud
+  }
+  px(c, x + 1, by + 3, s, '#a8b0b8'); px(c, x + 2, by + 3, s, '#a8b0b8'); // reflejo puntual
+  if (thumb) box4(c, s, x - 1, y - 1, fh + 1, 5, st);                     // pulgar envolviendo
+}
+
 // antebrazo enguantado que sale de la esquina inferior derecha (el ancla de la composición)
 function forearm(c, s, x, y, w = 16) {
   diagBeam(c, s, x, y, x + (95 - x) + 6, 78, w, HT);
@@ -577,20 +598,41 @@ function rivet(c, s, x, y) { px(c, x, y, s, '#59616f'); px(c, x, y + 1, s, '#121
 function rivetRow(c, s, x, y, n, dx = 4, dy = 0) { for (let i = 0; i < n; i++) rivet(c, s, x + i * dx, y + i * dy); }
 
 const SIL = {
-  // puños E9: DOS puños enguantados de frente, gordísimos (uno arriba-izq cargando el
-  // gancho, otro abajo-der subiendo), nudilleras con studs y placa emisiva en el dorso.
-  fists: { muzzle: [24, 22], draw(c, s, ac) {
-    diagBeam(c, s, 40, 40, 62, 56, 16, HT);               // antebrazo del gancho alto
-    fistFront(c, s, 16, 28, 24, HT, 12);                  // puño arriba-izq (el que pega)
-    rectPx(c, 19, 31, 17, 3, s, ac);                      // placa emisiva del dorso
-    rivetRow(c, s, 18, 36, 5);                            // remaches del guante
-    px(c, 20, 22, s, '#ffffff'); px(c, 21, 22, s, '#ffffff'); // stud con chispa
-    diagBeam(c, s, 62, 54, 92, 72, 22, HT);               // antebrazo del recto (gordo, cerca)
-    fistFront(c, s, 46, 42, 30, HT, 15);                  // puño abajo-der
-    rectPx(c, 50, 46, 22, 3, s, ac);
-    rivetRow(c, s, 48, 52, 6);
-    px(c, 50, 36, s, '#ffffff'); px(c, 51, 36, s, '#ffffff');
-    px(c, 30, 20, s, ac); px(c, 42, 16, s, ac); px(c, 36, 18, s, '#ffb057'); // chispas de impacto
+  // puños E9b: DOS PUÑOS GORDOS enguantados en primerísimo plano (guante #6b7280, sombra
+  // #3a4048, highlight #a8b0b8): el DERECHO abajo-cento enorme con los nudillos y studs
+  // mirando al jugador (de ahí sale el fogonazo) y el IZQUIERDO arriba-izq más chico en
+  // guardia. Antebrazos saliendo del borde inferior, AO pintado bajo cada puño y edge
+  // highlight blanco arriba (dirección de arte b+c).
+  fists: { muzzle: [48, 31], draw(c, s, ac) {
+    diagBeam(c, s, 28, 31, 52, 46, 13, GL);                 // antebrazo del guardia (se pierde detrás del puño grande)
+    box4(c, s, 8, 18, 22, 15, GL);                          // puño izquierdo en guardia (chico, arriba-izq)
+    for (let f = 0; f < 4; f++) {
+      const fx = 9 + f * 5;
+      box4(c, s, fx, 11, 4, 8, GL);                         // falanges
+      px(c, fx + 1, 12, s, '#e6ebf2'); px(c, fx + 1, 13, s, '#a8b0b8'); // stud de la falange
+    }
+    box4(c, s, 10, 27, 9, 6, GL);                           // pulgar cruzado
+    px(c, 12, 28, s, '#a8b0b8'); px(c, 13, 28, s, '#a8b0b8');
+    rectPx(c, 9, 33, 20, 1, s, '#242a31');                  // AO pintado bajo el puño
+    px(c, 10, 11, s, '#ffffff'); px(c, 11, 11, s, '#ffffff'); // edge highlight
+    px(c, 18, 22, s, ac);                                   // remate accent del dorso
+    diagBeam(c, s, 62, 50, 103, 77, 22, GL);                // antebrazo del recto (ENORME, sale del cuadro)
+    rectPx(c, 79, 56, 3, 14, s, '#171a20'); rectPx(c, 79, 60, 3, 4, s, ac); // correa del guante
+    box4(c, s, 32, 40, 36, 22, GL);                         // puño derecho: el que llena el lienzo
+    for (let f = 0; f < 4; f++) {
+      const fx = 33 + f * 9;
+      box4(c, s, fx, 29, 8, 12, GL);                        // nudilleras gordas mirando al jugador
+      rectPx(c, fx + 1, 30, 6, 4, s, '#7d8794');            // nudillo redondeado
+      px(c, fx + 2, 30, s, '#e6ebf2'); px(c, fx + 3, 31, s, '#a8b0b8'); // stud de metal
+      px(c, fx + 5, 33, s, '#3a4048');                      // AO del nudillo
+    }
+    box4(c, s, 36, 54, 13, 7, GL);                          // pulgar
+    px(c, 38, 55, s, '#a8b0b8'); px(c, 39, 55, s, '#a8b0b8');
+    rectPx(c, 33, 62, 35, 1, s, '#242a31'); rectPx(c, 35, 63, 31, 1, s, '#050609'); // AO dos tonos
+    px(c, 34, 29, s, '#ffffff'); px(c, 35, 29, s, '#ffffff'); px(c, 33, 30, s, '#ffffff'); // edge highlight esquina luz
+    px(c, 44, 30, s, '#ffffff');                            // destello sobre los nudillos (boca real)
+    px(c, 59, 30, s, ac);                                   // stud accent en el nudillo externo
+    px(c, 73, 52, s, ac); px(c, 71, 48, s, ac);             // chispas del golpe
   } },
   // Vecinal 9mm E9: semi-auto moderna en 3/4 — slide gruesa con serrations, boca anular,
   // guarda+gatillo, mira frontal blanca y la mano gorda agarrando el grip con 4 dedos.
