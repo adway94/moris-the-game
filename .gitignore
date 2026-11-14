@@ -1,2 +1,4 @@
 # certificado self-signed de serve_https.py (se regenera solo)
 certs/
+
+node_modules/
